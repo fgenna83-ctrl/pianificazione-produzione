@@ -67,32 +67,40 @@ def salva_dati(dati):
 
 
 # =========================
-# TEMPI PRODUZIONE (NUOVI)
+# TEMPI PRODUZIONE (vetri TOTALI per riga sui battenti)
 # =========================
-def minuti_per_struttura(materiale: str, tipologia: str, num_vetri: int) -> int:
+def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int) -> int:
     """
     Battente:
-      - PVC: 90 min a vetro
-      - Alluminio: 90 min a vetro + 30 min fissi a struttura
-    Scorrevole e Speciale:
-      - 8 ore/struttura (480 min) per entrambi i materiali
+      - PVC: 90 min per vetro (vetri_totali)
+      - Alluminio: 90 min per vetro (vetri_totali) + 30 min per struttura (quantita_strutture)
+    Scorrevole e Struttura speciale:
+      - 480 min per struttura (quantita_strutture) indipendente dal materiale
     """
+    tipologia = tipologia.strip()
+
     if tipologia == "Battente":
-        tempo = num_vetri * 90
+        tempo = int(vetri_totali) * 90
         if materiale == "Alluminio":
-            tempo += 30
+            tempo += int(quantita_strutture) * 30
         return tempo
 
     # Scorrevole o Struttura speciale
-    return MINUTI_8_ORE
+    return int(quantita_strutture) * MINUTI_8_ORE
 
 
-def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, num_vetri: int) -> int:
-    return minuti_per_struttura(materiale, tipologia, num_vetri) * quantita_strutture
+def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int) -> tuple[int, int]:
+    """
+    Per mostrare anteprima in UI: (minuti_totali_riga, minuti_medi_per_struttura)
+    """
+    tot = tempo_riga(materiale, tipologia, quantita_strutture, vetri_totali)
+    if quantita_strutture > 0:
+        return tot, int(round(tot / quantita_strutture))
+    return tot, tot
 
 
 # =========================
-# PIANIFICAZIONE (come già funziona: spezza su più giorni)
+# PIANIFICAZIONE (spezzata su più giorni)
 # =========================
 def calcola_piano(dati):
     ordini = dati.get("ordini", [])
@@ -101,7 +109,6 @@ def calcola_piano(dati):
 
     oggi = date.today()
 
-    # Stato separato per ogni materiale
     stato = {
         "PVC": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]},
         "Alluminio": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]},
@@ -145,7 +152,7 @@ def calcola_piano(dati):
                 "Materiale": materiale,
                 "Tipologia": o.get("tipologia", ""),
                 "Qta_strutture": o.get("quantita_strutture", ""),
-                "Vetri": o.get("num_vetri", ""),
+                "Vetri_totali": o.get("vetri_totali", ""),
                 "Minuti_prodotti": prodotti_oggi,
                 "Minuti_residui_materiale": cap - usati
             })
@@ -164,7 +171,7 @@ def calcola_piano(dati):
             "Materiale": materiale,
             "Tipologia": o.get("tipologia", ""),
             "Qta_strutture": o.get("quantita_strutture", ""),
-            "Vetri": o.get("num_vetri", ""),
+            "Vetri_totali": o.get("vetri_totali", ""),
             "Tempo_minuti": tempo_totale,
             "Richiesta": o.get("data_richiesta", ""),
             "Stimata": str(giorno)
@@ -189,7 +196,6 @@ st.title("📦 Planner Produzione (Online)")
 
 dati = carica_dati()
 
-# Stato righe ordine in sessione (per costruire ordini con più tipologie)
 if "righe_correnti" not in st.session_state:
     st.session_state["righe_correnti"] = []
 
@@ -203,7 +209,8 @@ with col1:
         "Regole tempo:\n"
         "• Battente: 90 min/vetro (Alluminio +30 min/struttura)\n"
         "• Scorrevole: 480 min/struttura\n"
-        "• Speciale: 480 min/struttura"
+        "• Speciale: 480 min/struttura\n\n"
+        "⚠️ Per Battente i vetri sono TOTALI della riga (somma su tutte le strutture)."
     )
 
 with col2:
@@ -220,14 +227,17 @@ with col2:
     quantita_strutture = st.number_input("Quantità strutture (riga)", min_value=1, value=1, step=1)
 
     if tipologia == "Battente":
-        num_vetri = st.number_input("Numero vetri per struttura (solo battente)", min_value=1, value=1, step=1)
+        vetri_totali = st.number_input(
+            "Numero vetri TOTALI per questa riga (somma su tutte le strutture)",
+            min_value=1,
+            value=1,
+            step=1
+        )
     else:
-        num_vetri = 0  # non serve
+        vetri_totali = 0
 
-    minuti_struttura = minuti_per_struttura(materiale, tipologia, int(num_vetri))
-    minuti_riga = minuti_struttura * int(quantita_strutture)
-
-    st.info(f"⏱️ Questa riga: {minuti_struttura} min/struttura → totale riga {minuti_riga} minuti")
+    minuti_riga, minuti_medi = minuti_preview(materiale, tipologia, int(quantita_strutture), int(vetri_totali))
+    st.info(f"⏱️ Questa riga: totale {minuti_riga} minuti (≈ {minuti_medi} min/struttura)")
 
     cadd, cclear = st.columns(2)
 
@@ -237,7 +247,7 @@ with col2:
                 "materiale": materiale,
                 "tipologia": tipologia,
                 "quantita_strutture": int(quantita_strutture),
-                "num_vetri": int(num_vetri) if tipologia == "Battente" else "",
+                "vetri_totali": int(vetri_totali) if tipologia == "Battente" else "",
                 "tempo_minuti": int(minuti_riga)
             })
             st.success("Riga aggiunta")
@@ -262,7 +272,6 @@ with col2:
         elif not st.session_state["righe_correnti"]:
             st.error("Aggiungi almeno una riga ordine.")
         else:
-            # Generiamo un id "gruppo ordine" per collegare le righe dello stesso ordine
             ordini_esistenti = dati.get("ordini", [])
             max_gruppo = 0
             for oo in ordini_esistenti:
@@ -272,7 +281,6 @@ with col2:
                     pass
             ordine_gruppo = max_gruppo + 1
 
-            # ogni riga diventa un "record" pianificabile (materiale unico per riga)
             for r in st.session_state["righe_correnti"]:
                 nuovo = {
                     "id": len(dati["ordini"]) + 1,
@@ -282,7 +290,7 @@ with col2:
                     "materiale": r["materiale"],
                     "tipologia": r["tipologia"],
                     "quantita_strutture": r["quantita_strutture"],
-                    "num_vetri": r["num_vetri"],
+                    "vetri_totali": r["vetri_totali"],
                     "tempo_minuti": int(r["tempo_minuti"]),
                     "data_richiesta": str(data_richiesta),
                     "inserito_il": str(date.today())
@@ -330,3 +338,4 @@ if "consegne" in st.session_state:
 if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
+
