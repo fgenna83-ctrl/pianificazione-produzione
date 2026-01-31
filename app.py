@@ -541,7 +541,13 @@ else:
         st.caption("Ogni rettangolo = 1 giorno di produzione per una commessa. Testo = strutture prodotte.")
 
     if show_minutes:
-        agg["label"] = agg["Commessa"] + " | " + agg["strutture"].round(1).astype(str) + " strutt. | " + agg["minuti"].astype(int).astype(str) + " min"
+        agg["label"] = (
+        agg["Commessa"]
+        + "\n"
+        + agg["strutture"].round(1).astype(str) + " strutt."
+        + "\n"
+        + agg["minuti"].astype(int).astype(str) + " min"
+        )
 
     sort_y = None
     if ordina == "Per Gruppo":
@@ -568,11 +574,13 @@ else:
 
     # testo dentro i rettangoli
     text = alt.Chart(agg).mark_text(
-        align="left",
-        baseline="middle",
-        dx=6,  # sposta testo a destra
-        fontSize=12
-    ).encode(
+    align="left",
+    baseline="top",
+    dx=6,
+    dy=6,
+    fontSize=12,
+    lineBreak="\n"
+).encode(
         y=alt.Y("Commessa:N", sort=sort_y),
         x=alt.X("inizio:T"),
         text="label:N"
@@ -583,5 +591,6 @@ else:
     ).interactive()
 
     st.altair_chart(chart, use_container_width=True)
+
 
 
