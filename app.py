@@ -31,9 +31,34 @@ def get_component_dir() -> Path:
 _COMPONENT_DIR = get_component_dir()
 
 if _COMPONENT_DIR and str(_COMPONENT_DIR) != "." and _COMPONENT_DIR.exists():
-    gantt_dnd = components.declare_component("gantt_dnd", path=str(_COMPONENT_DIR))
+    # =========================
+# COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
+# =========================
+ def _find_gantt_component_dir() -> Path | None:
+    # 1) stessa cartella di app.py
+    try:
+        p = Path(__file__).resolve().parent / "gantt_dnd"
+        if p.exists() and p.is_dir():
+            return p
+    except Exception:
+        pass
+
+    # 2) working directory (alcuni deploy)
+    p = Path.cwd() / "gantt_dnd"
+    if p.exists() and p.is_dir():
+        return p
+
+    return None
+
+
+_gantt_dir = _find_gantt_component_dir()
+
+if _gantt_dir is not None:
+    gantt_dnd = components.declare_component("gantt_dnd", path=str(_gantt_dir))
 else:
     gantt_dnd = None
+
+
 
 
 FILE_DATI = "dati_produzione.json"
@@ -848,6 +873,7 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
