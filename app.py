@@ -529,7 +529,7 @@ if "piano" in st.session_state:
         with colA:
             show_minutes = st.checkbox("Mostra minuti nel box", value=False)
         with colB:
-            ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0)
+            ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
         with colC:
             st.caption("Ogni rettangolo = 1 giorno di produzione per una commessa. Testo = strutture prodotte.")
 
