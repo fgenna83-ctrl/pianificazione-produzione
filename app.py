@@ -12,6 +12,8 @@ CAPACITA_MINUTI_GIORNALIERA = {
     "Alluminio": 3000
 }
 
+MINUTI_8_ORE = 8 * 60  # 480
+
 
 # =========================
 # LOGIN (Streamlit Secrets)
@@ -56,7 +58,6 @@ def carica_dati():
     if os.path.exists(FILE_DATI):
         with open(FILE_DATI, "r", encoding="utf-8") as f:
             return json.load(f)
-    # manteniamo la chiave per compatibilità con dati vecchi, anche se ora non la usiamo
     return {"capacita_giornaliera": 0, "ordini": []}
 
 
@@ -66,17 +67,32 @@ def salva_dati(dati):
 
 
 # =========================
-# TEMPI PRODUZIONE
+# TEMPI PRODUZIONE (NUOVI)
 # =========================
-def calcola_tempo_produzione(materiale: str, num_vetri: int) -> int:
-    tempo = num_vetri * 90  # 90 minuti a vetro
-    if materiale == "Alluminio":
-        tempo += 30  # +30 minuti fissi a struttura
-    return tempo
+def minuti_per_struttura(materiale: str, tipologia: str, num_vetri: int) -> int:
+    """
+    Battente:
+      - PVC: 90 min a vetro
+      - Alluminio: 90 min a vetro + 30 min fissi a struttura
+    Scorrevole e Speciale:
+      - 8 ore/struttura (480 min) per entrambi i materiali
+    """
+    if tipologia == "Battente":
+        tempo = num_vetri * 90
+        if materiale == "Alluminio":
+            tempo += 30
+        return tempo
+
+    # Scorrevole o Struttura speciale
+    return MINUTI_8_ORE
+
+
+def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, num_vetri: int) -> int:
+    return minuti_per_struttura(materiale, tipologia, num_vetri) * quantita_strutture
 
 
 # =========================
-# PIANIFICAZIONE (NUOVA: capacità minuti per materiale)
+# PIANIFICAZIONE (come già funziona: spezza su più giorni)
 # =========================
 def calcola_piano(dati):
     ordini = dati.get("ordini", [])
@@ -85,18 +101,10 @@ def calcola_piano(dati):
 
     oggi = date.today()
 
-    # Stato separato per ogni materiale (minuti/giorno)
+    # Stato separato per ogni materiale
     stato = {
-        "PVC": {
-            "giorno": oggi,
-            "usati": 0,
-            "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]
-        },
-        "Alluminio": {
-            "giorno": oggi,
-            "usati": 0,
-            "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]
-        }
+        "PVC": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]},
+        "Alluminio": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]},
     }
 
     piano = []
@@ -117,11 +125,8 @@ def calcola_piano(dati):
         usati = stato[materiale]["usati"]
         cap = stato[materiale]["cap"]
 
-        # Se un ordine è più grande della capacità giornaliera, lo spezzettiamo su più giorni
         while remaining > 0:
             disponibili = cap - usati
-
-            # Se oggi non ho più minuti disponibili, passo al giorno dopo e resetto
             if disponibili <= 0:
                 giorno = giorno + timedelta(days=1)
                 usati = 0
@@ -134,42 +139,42 @@ def calcola_piano(dati):
             piano.append({
                 "Data": str(giorno),
                 "Ordine": o.get("id", ""),
+                "Gruppo": o.get("ordine_gruppo", ""),
                 "Cliente": o.get("cliente", ""),
                 "Prodotto": o.get("prodotto", ""),
                 "Materiale": materiale,
                 "Tipologia": o.get("tipologia", ""),
+                "Qta_strutture": o.get("quantita_strutture", ""),
                 "Vetri": o.get("num_vetri", ""),
-                "Tempo_minuti_prodotti": prodotti_oggi,
+                "Minuti_prodotti": prodotti_oggi,
                 "Minuti_residui_materiale": cap - usati
             })
 
-            # Se l'ordine non è finito e ho riempito la giornata, continuo domani
             if remaining > 0 and usati >= cap:
                 giorno = giorno + timedelta(days=1)
                 usati = 0
 
-        # consegna stimata = giorno in cui termina l'ultima parte dell'ordine
         o["consegna_stimata"] = str(giorno)
 
         consegne.append({
             "Ordine": o.get("id", ""),
+            "Gruppo": o.get("ordine_gruppo", ""),
             "Cliente": o.get("cliente", ""),
             "Prodotto": o.get("prodotto", ""),
             "Materiale": materiale,
             "Tipologia": o.get("tipologia", ""),
+            "Qta_strutture": o.get("quantita_strutture", ""),
             "Vetri": o.get("num_vetri", ""),
             "Tempo_minuti": tempo_totale,
             "Richiesta": o.get("data_richiesta", ""),
             "Stimata": str(giorno)
         })
 
-        # Salvo lo stato aggiornato per il materiale
         stato[materiale]["giorno"] = giorno
         stato[materiale]["usati"] = usati
 
     salva_dati(dati)
     return consegne, piano
-
 
 
 # =========================
@@ -184,58 +189,114 @@ st.title("📦 Planner Produzione (Online)")
 
 dati = carica_dati()
 
+# Stato righe ordine in sessione (per costruire ordini con più tipologie)
+if "righe_correnti" not in st.session_state:
+    st.session_state["righe_correnti"] = []
+
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("⚙️ Impostazioni")
-
+    st.subheader("⚙️ Capacità giornaliera (minuti/giorno)")
     st.info(
-        "Capacità giornaliera fissa (minuti/giorno):\n"
-        f"• PVC: {CAPACITA_MINUTI_GIORNALIERA['PVC']}\n"
-        f"• Alluminio: {CAPACITA_MINUTI_GIORNALIERA['Alluminio']}"
+        f"• PVC: {CAPACITA_MINUTI_GIORNALIERA['PVC']} minuti\n"
+        f"• Alluminio: {CAPACITA_MINUTI_GIORNALIERA['Alluminio']} minuti\n\n"
+        "Regole tempo:\n"
+        "• Battente: 90 min/vetro (Alluminio +30 min/struttura)\n"
+        "• Scorrevole: 480 min/struttura\n"
+        "• Speciale: 480 min/struttura"
     )
 
 with col2:
-    st.subheader("➕ Nuovo ordine")
+    st.subheader("➕ Nuovo ordine (con righe)")
 
     cliente = st.text_input("Cliente")
     prodotto = st.text_input("Prodotto/commessa")
-
-    materiale = st.selectbox("Materiale", ["PVC", "Alluminio"])
-    tipologia = st.selectbox("Tipologia", ["Battente", "Scorrevole", "Struttura speciale"])
-    num_vetri = st.number_input("Numero vetri", min_value=1, value=1, step=1)
-
     data_richiesta = st.date_input("Data richiesta consegna", value=date.today())
 
-    tempo_preview = calcola_tempo_produzione(materiale, int(num_vetri))
-    st.info(f"⏱️ Tempo stimato: {tempo_preview} minuti")
+    st.markdown("### Aggiungi riga ordine")
 
-    if st.button("Aggiungi ordine"):
-        if (not cliente) or (not prodotto):
-            st.error("Compila cliente e prodotto.")
-        else:
-            tempo = calcola_tempo_produzione(materiale, int(num_vetri))
+    materiale = st.selectbox("Materiale riga", ["PVC", "Alluminio"])
+    tipologia = st.selectbox("Tipologia riga", ["Battente", "Scorrevole", "Struttura speciale"])
+    quantita_strutture = st.number_input("Quantità strutture (riga)", min_value=1, value=1, step=1)
 
-            nuovo = {
-                "id": len(dati["ordini"]) + 1,
-                "cliente": cliente,
-                "prodotto": prodotto,
+    if tipologia == "Battente":
+        num_vetri = st.number_input("Numero vetri per struttura (solo battente)", min_value=1, value=1, step=1)
+    else:
+        num_vetri = 0  # non serve
+
+    minuti_struttura = minuti_per_struttura(materiale, tipologia, int(num_vetri))
+    minuti_riga = minuti_struttura * int(quantita_strutture)
+
+    st.info(f"⏱️ Questa riga: {minuti_struttura} min/struttura → totale riga {minuti_riga} minuti")
+
+    cadd, cclear = st.columns(2)
+
+    with cadd:
+        if st.button("➕ Aggiungi riga"):
+            st.session_state["righe_correnti"].append({
                 "materiale": materiale,
                 "tipologia": tipologia,
-                "num_vetri": int(num_vetri),
-                "tempo_minuti": int(tempo),
-                "data_richiesta": str(data_richiesta),
-                "inserito_il": str(date.today())
-            }
+                "quantita_strutture": int(quantita_strutture),
+                "num_vetri": int(num_vetri) if tipologia == "Battente" else "",
+                "tempo_minuti": int(minuti_riga)
+            })
+            st.success("Riga aggiunta")
 
-            dati["ordini"].append(nuovo)
+    with cclear:
+        if st.button("🧹 Svuota righe"):
+            st.session_state["righe_correnti"] = []
+            st.warning("Righe azzerate")
+
+    st.markdown("### Righe attuali")
+    righe = st.session_state["righe_correnti"]
+    if righe:
+        st.dataframe(righe, use_container_width=True)
+        totale = sum(int(r.get("tempo_minuti", 0)) for r in righe)
+        st.success(f"Totale ordine (somma righe): {totale} minuti")
+    else:
+        st.info("Nessuna riga aggiunta.")
+
+    if st.button("💾 Salva ordine"):
+        if (not cliente) or (not prodotto):
+            st.error("Compila cliente e prodotto.")
+        elif not st.session_state["righe_correnti"]:
+            st.error("Aggiungi almeno una riga ordine.")
+        else:
+            # Generiamo un id "gruppo ordine" per collegare le righe dello stesso ordine
+            ordini_esistenti = dati.get("ordini", [])
+            max_gruppo = 0
+            for oo in ordini_esistenti:
+                try:
+                    max_gruppo = max(max_gruppo, int(oo.get("ordine_gruppo", 0)))
+                except Exception:
+                    pass
+            ordine_gruppo = max_gruppo + 1
+
+            # ogni riga diventa un "record" pianificabile (materiale unico per riga)
+            for r in st.session_state["righe_correnti"]:
+                nuovo = {
+                    "id": len(dati["ordini"]) + 1,
+                    "ordine_gruppo": ordine_gruppo,
+                    "cliente": cliente,
+                    "prodotto": prodotto,
+                    "materiale": r["materiale"],
+                    "tipologia": r["tipologia"],
+                    "quantita_strutture": r["quantita_strutture"],
+                    "num_vetri": r["num_vetri"],
+                    "tempo_minuti": int(r["tempo_minuti"]),
+                    "data_richiesta": str(data_richiesta),
+                    "inserito_il": str(date.today())
+                }
+                dati["ordini"].append(nuovo)
+
             salva_dati(dati)
-            st.success(f"Ordine aggiunto (tempo: {tempo} minuti)")
+            st.session_state["righe_correnti"] = []
+            st.success(f"Ordine salvato (gruppo {ordine_gruppo})")
 
 st.divider()
 
-st.subheader("📋 Ordini")
-if dati["ordini"]:
+st.subheader("📋 Ordini (righe)")
+if dati.get("ordini"):
     st.dataframe(dati["ordini"], use_container_width=True)
 else:
     st.info("Nessun ordine inserito.")
@@ -254,6 +315,7 @@ with c2:
         salva_dati(dati)
         st.session_state.pop("consegne", None)
         st.session_state.pop("piano", None)
+        st.session_state["righe_correnti"] = []
         st.warning("Ordini cancellati")
 
 with c3:
@@ -262,11 +324,9 @@ with c3:
         st.rerun()
 
 if "consegne" in st.session_state:
-    st.subheader("✅ Consegne stimate")
+    st.subheader("✅ Consegne stimate (per riga)")
     st.dataframe(st.session_state["consegne"], use_container_width=True)
 
 if "piano" in st.session_state:
-    st.subheader("🧾 Piano produzione giorno per giorno")
+    st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
-    st.caption("La pianificazione rispetta le capacità giornaliere in minuti per materiale: PVC 4500, Alluminio 3000.")
-
