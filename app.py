@@ -627,93 +627,124 @@ if "piano" in st.session_state:
     # -----------------------------
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
-    df = pd.DataFrame(st.session_state["piano"])
-    if df.empty:
-        st.info("Nessun dato per il Gantt.")
+df = pd.DataFrame(st.session_state.get("piano", []))
+if df.empty:
+    st.info("Nessun dato per il Gantt.")
+else:
+    # date
+    df["Data"] = pd.to_datetime(df["Data"])
+
+    # Tieni solo lunedì-venerdì (0=lunedì, 4=venerdì)
+    df = df[df["Data"].dt.weekday < 5]
+
+    # Nome commessa completo + una versione corta per asse Y
+    df["Commessa"] = (
+        "Gruppo " + df["Gruppo"].astype(str)
+        + " | " + df["Cliente"].astype(str)
+        + " | " + df["Prodotto"].astype(str)
+    )
+
+    # Aggrego per giorno + commessa (sommo strutture e minuti)
+    agg = (
+        df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
+          .agg(
+              strutture=("Strutture_prodotte", "sum"),
+              minuti=("Minuti_prodotti", "sum")
+          )
+    )
+
+    # Tile = 1 giorno
+    agg["inizio"] = agg["Data"]
+    agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
+
+    # Punto centrale del rettangolo (per centrare testo)
+    agg["mid"] = agg["inizio"] + pd.Timedelta(hours=12)
+
+    # Label “pulita” a 2 righe
+    # Riga 1: Gruppo | Cliente | Prodotto
+    # Riga 2: strutture + minuti (se spuntato)
+    agg["label_base"] = (
+        "G" + agg["Gruppo"].astype(str)
+        + " | " + agg["Cliente"].astype(str)
+        + " | " + agg["Prodotto"].astype(str)
+    )
+
+    colA, colB, colC = st.columns([1, 1, 2])
+    with colA:
+        show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
+    with colB:
+        ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
+    with colC:
+        st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
+
+    if show_minutes:
+        agg["label"] = (
+            agg["label_base"]
+            + "\n"
+            + agg["strutture"].round(1).astype(str)
+            + " strutt.  |  "
+            + agg["minuti"].astype(int).astype(str)
+            + " min"
+        )
     else:
-        df["Data"] = pd.to_datetime(df["Data"])
-        df = df[df["Data"].dt.weekday < 5]  # lun-ven
-
-        df["Commessa"] = (
-            "Gruppo " + df["Gruppo"].astype(str)
-            + " | " + df["Cliente"].astype(str)
-            + " | " + df["Prodotto"].astype(str)
+        agg["label"] = (
+            agg["label_base"]
+            + "\n"
+            + agg["strutture"].round(1).astype(str)
+            + " strutt."
         )
 
-        agg = (
-            df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
-              .agg(
-                  strutture=("Strutture_prodotte", "sum"),
-                  minuti=("Minuti_prodotti", "sum")
-              )
-        )
+    # Ordinamento asse Y
+    if ordina == "Per Gruppo":
+        sort_y = alt.SortField(field="Gruppo", order="ascending")
+    else:
+        sort_y = alt.SortField(field="Cliente", order="ascending")
 
-        agg["inizio"] = agg["Data"]
-        agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
+    base = alt.Chart(agg).encode(
+        y=alt.Y(
+            "Commessa:N",
+            sort=sort_y,
+            title="Commesse",
+            axis=alt.Axis(labelFontSize=12, labelLimit=500, titleFontSize=13),
+            scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15)
+        ),
+        x=alt.X(
+            "yearmonthdate(inizio):T",
+            title="Giorni",
+            axis=alt.Axis(format="%d/%m", labelAngle=0, labelFontSize=12, titleFontSize=13)
+        ),
+        x2="fine:T",
+        tooltip=[
+            alt.Tooltip("Data:T", title="Giorno"),
+            alt.Tooltip("Commessa:N", title="Commessa"),
+            alt.Tooltip("strutture:Q", title="Strutture prodotte"),
+            alt.Tooltip("minuti:Q", title="Minuti prodotti"),
+        ],
+    )
 
-        agg["label"] = agg["Commessa"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
+    # Rettangoli
+    bars = base.mark_bar(cornerRadius=10).encode(
+        color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
+    )
 
-        colA, colB, colC = st.columns([1, 1, 2])
-        with colA:
-            show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
-        with colB:
-            ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
-        with colC:
-            st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
+    # Testo centrato nel rettangolo
+    text = alt.Chart(agg).mark_text(
+        align="center",
+        baseline="middle",
+        fontSize=13,
+        lineBreak="\n"
+    ).encode(
+        y=alt.Y("Commessa:N", sort=sort_y),
+        x=alt.X("mid:T"),
+        text="label:N"
+    )
 
-        if show_minutes:
-            agg["label"] = (
-                agg["Commessa"]
-                + "\n"
-                + agg["strutture"].round(1).astype(str)
-                + " strutt. | "
-                + agg["minuti"].astype(int).astype(str)
-                + " min"
-            )
+    chart = (bars + text).properties(
+        height=max(380, 70 * len(agg["Commessa"].unique())),  # più spazio per riga
+    )
 
-        if ordina == "Per Gruppo":
-            sort_y = alt.SortField(field="Gruppo", order="ascending")
-        else:
-            sort_y = alt.SortField(field="Cliente", order="ascending")
+    st.altair_chart(chart, use_container_width=True)
 
-        base = alt.Chart(agg).encode(
-            y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
-            x=alt.X(
-                "yearmonthdate(inizio):T",
-                title="Giorni",
-                axis=alt.Axis(format="%d/%m", labelAngle=0)
-            ),
-            x2="fine:T",
-            tooltip=[
-                alt.Tooltip("Data:T", title="Giorno"),
-                alt.Tooltip("Commessa:N", title="Commessa"),
-                alt.Tooltip("strutture:Q", title="Strutture prodotte"),
-                alt.Tooltip("minuti:Q", title="Minuti prodotti"),
-            ],
-        )
-
-        bars = base.mark_bar(cornerRadius=6).encode(
-            color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
-        )
-
-        text = alt.Chart(agg).mark_text(
-            align="left",
-            baseline="top",
-            dx=6,
-            dy=6,
-            fontSize=12,
-            lineBreak="\n"
-        ).encode(
-            y=alt.Y("Commessa:N", sort=sort_y),
-            x=alt.X("inizio:T"),
-            text="label:N"
-        )
-
-        chart = (bars + text).properties(
-            height=max(300, 45 * len(agg["Commessa"].unique())),
-        ).interactive()
-
-        st.altair_chart(chart, use_container_width=True)
 
 
 
