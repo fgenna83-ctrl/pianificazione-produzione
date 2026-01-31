@@ -710,33 +710,49 @@ if "piano" in st.session_state:
     # -----------------------------
     # GANTT CLASSICO (Altair) - sempre disponibile
     # -----------------------------
+       # -----------------------------
+    # GANTT CLASSICO (Altair) - SOLO GIORNI LAVORATIVI (NO SAB/DOM) ANCHE SULL’ASSE
+    # -----------------------------
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
     df = pd.DataFrame(st.session_state.get("piano", []))
     if df.empty:
         st.info("Nessun dato per il Gantt.")
     else:
+        # date
         df["Data"] = pd.to_datetime(df["Data"])
-        df = df[df["Data"].dt.weekday < 5]
 
+        # ✅ Tieni solo lunedì-venerdì
+        df = df[df["Data"].dt.weekday < 5].copy()
+
+        # ✅ Stringa giorno (categoria) così l’asse NON mostra sab/dom
+        df["Giorno"] = df["Data"].dt.strftime("%d/%m")
+
+        # Nome commessa completo (asse Y)
         df["Commessa"] = (
             "Gruppo " + df["Gruppo"].astype(str)
             + " | " + df["Cliente"].astype(str)
             + " | " + df["Prodotto"].astype(str)
         )
 
+        # Aggrego per giorno + commessa (sommo strutture e minuti)
         agg = (
-            df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
+            df.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
               .agg(
                   strutture=("Strutture_prodotte", "sum"),
                   minuti=("Minuti_prodotti", "sum")
               )
         )
 
-        agg["inizio"] = agg["Data"]
-        agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
-        agg["mid"] = agg["inizio"] + pd.Timedelta(hours=12)
+        # Ordinamento asse X: in ordine cronologico reale
+        giorni_ordinati = (
+            df[["Giorno", "Data"]]
+            .drop_duplicates()
+            .sort_values("Data")["Giorno"]
+            .tolist()
+        )
 
+        # Label base
         agg["label_base"] = (
             "G" + agg["Gruppo"].astype(str)
             + " | " + agg["Cliente"].astype(str)
@@ -768,11 +784,13 @@ if "piano" in st.session_state:
                 + " strutt."
             )
 
+        # Ordinamento asse Y
         if ordina == "Per Gruppo":
             sort_y = alt.SortField(field="Gruppo", order="ascending")
         else:
             sort_y = alt.SortField(field="Cliente", order="ascending")
 
+        # ✅ X = categoria (Giorno) così NON esistono sabato/domenica
         base = alt.Chart(agg).encode(
             y=alt.Y(
                 "Commessa:N",
@@ -782,23 +800,25 @@ if "piano" in st.session_state:
                 scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15)
             ),
             x=alt.X(
-                "yearmonthdate(inizio):T",
-                title="Giorni",
-                axis=alt.Axis(format="%d/%m", labelAngle=0, labelFontSize=12, titleFontSize=13)
+                "Giorno:N",
+                sort=giorni_ordinati,
+                title="Giorni (solo lavorativi)",
+                axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13)
             ),
-            x2="fine:T",
             tooltip=[
-                alt.Tooltip("Data:T", title="Giorno"),
+                alt.Tooltip("Giorno:N", title="Giorno"),
                 alt.Tooltip("Commessa:N", title="Commessa"),
                 alt.Tooltip("strutture:Q", title="Strutture prodotte"),
                 alt.Tooltip("minuti:Q", title="Minuti prodotti"),
             ],
         )
 
+        # Rettangoli (tile)
         bars = base.mark_bar(cornerRadius=10).encode(
             color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
         )
 
+        # Testo centrato nel rettangolo
         text = alt.Chart(agg).mark_text(
             align="center",
             baseline="middle",
@@ -806,7 +826,7 @@ if "piano" in st.session_state:
             lineBreak="\n"
         ).encode(
             y=alt.Y("Commessa:N", sort=sort_y),
-            x=alt.X("mid:T"),
+            x=alt.X("Giorno:N", sort=giorni_ordinati),
             text="label:N"
         )
 
@@ -815,6 +835,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
