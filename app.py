@@ -3,6 +3,8 @@ from datetime import date, timedelta
 import json
 import os
 import hashlib
+import pandas as pd
+import altair as alt
 
 FILE_DATI = "dati_produzione.json"
 
@@ -492,4 +494,112 @@ if "consegne" in st.session_state:
 if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
+    st.subheader("📊 Gantt Produzione")
+
+    df = pd.DataFrame(st.session_state["piano"])
+    if df.empty:
+        st.info("Nessun dato per il Gantt.")
+    else:
+        # parsing date
+        df["Data"] = pd.to_datetime(df["Data"])
+
+        vista = st.selectbox(
+            "Vista Gantt",
+            ["Per commessa (Gruppo)", "Per commessa + materiale", "Per riga (ID ordine)"],
+            key="vista_gantt"
+        )
+
+        if vista == "Per commessa (Gruppo)":
+            # una barra per gruppo (ordine completo)
+            g = (
+                df.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
+                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
+            )
+            # fine inclusiva -> aggiungo 1 giorno per chiudere la barra correttamente
+            g["fine"] = g["fine"] + pd.Timedelta(days=1)
+
+            chart = (
+                alt.Chart(g)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Gruppo:N", sort="-x", title="Commessa (Gruppo)"),
+                    x=alt.X("inizio:T", title="Data"),
+                    x2="fine:T",
+                    color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente")),
+                    tooltip=[
+                        "Gruppo:N",
+                        "Cliente:N",
+                        "Prodotto:N",
+                        alt.Tooltip("inizio:T", title="Inizio"),
+                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
+                    ],
+                )
+                .properties(height=max(200, 40 * len(g)))
+                .interactive()
+            )
+
+            st.altair_chart(chart, use_container_width=True)
+
+        elif vista == "Per commessa + materiale":
+            # barre separate per PVC / Alluminio dentro ogni gruppo
+            g = (
+                df.groupby(["Gruppo", "Cliente", "Prodotto", "Materiale"], as_index=False)
+                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
+            )
+            g["fine"] = g["fine"] + pd.Timedelta(days=1)
+
+            chart = (
+                alt.Chart(g)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Gruppo:N", sort="-x", title="Commessa (Gruppo)"),
+                    x=alt.X("inizio:T", title="Data"),
+                    x2="fine:T",
+                    color=alt.Color("Materiale:N", legend=alt.Legend(title="Materiale")),
+                    tooltip=[
+                        "Gruppo:N",
+                        "Cliente:N",
+                        "Prodotto:N",
+                        "Materiale:N",
+                        alt.Tooltip("inizio:T", title="Inizio"),
+                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
+                    ],
+                )
+                .properties(height=max(200, 40 * len(g["Gruppo"].unique())))
+                .interactive()
+            )
+
+            st.altair_chart(chart, use_container_width=True)
+
+        else:  # "Per riga (ID ordine)"
+            g = (
+                df.groupby(["Ordine", "Gruppo", "Cliente", "Prodotto", "Materiale", "Tipologia"], as_index=False)
+                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
+            )
+            g["fine"] = g["fine"] + pd.Timedelta(days=1)
+
+            chart = (
+                alt.Chart(g)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Ordine:N", sort="-x", title="Riga (ID)"),
+                    x=alt.X("inizio:T", title="Data"),
+                    x2="fine:T",
+                    color=alt.Color("Materiale:N", legend=alt.Legend(title="Materiale")),
+                    tooltip=[
+                        "Ordine:N",
+                        "Gruppo:N",
+                        "Cliente:N",
+                        "Prodotto:N",
+                        "Materiale:N",
+                        "Tipologia:N",
+                        alt.Tooltip("inizio:T", title="Inizio"),
+                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
+                    ],
+                )
+                .properties(height=max(250, 25 * len(g)))
+                .interactive()
+            )
+
+            st.altair_chart(chart, use_container_width=True)
 
