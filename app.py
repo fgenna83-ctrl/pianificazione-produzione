@@ -507,6 +507,8 @@ if df.empty:
 else:
     # date
     df["Data"] = pd.to_datetime(df["Data"])
+# Tieni solo lunedì-venerdì (0=lunedì, 4=venerdì)
+    df = df[df["Data"].dt.weekday < 5]
 
     # nome commessa "bello"
     df["Commessa"] = (
@@ -559,7 +561,14 @@ else:
 
     base = alt.Chart(agg).encode(
         y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
-        x=alt.X("inizio:T", title="Giorni"),
+        x=alt.X(
+    "yearmonthdate(inizio):T",
+    title="Giorni",
+    axis=alt.Axis(
+        format="%d/%m",
+        labelAngle=0
+    )
+),
         x2="fine:T",
         tooltip=[
             alt.Tooltip("Data:T", title="Giorno"),
