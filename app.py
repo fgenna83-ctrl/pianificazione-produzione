@@ -5,6 +5,9 @@ import os
 import hashlib
 import pandas as pd
 import altair as alt
+import streamlit.components.v1 as components
+from pathlib import Path
+
 
 FILE_DATI = "dati_produzione.json"
 
@@ -16,6 +19,15 @@ CAPACITA_MINUTI_GIORNALIERA = {
 
 MINUTI_8_ORE = 8 * 60  # 480
 
+# =========================
+# COMPONENT (GANTT DRAG&DROP)
+# =========================
+# ATTENZIONE: qui serve una cartella componente, es: ./gantt_dnd/index.html
+# (il tuo file html va come index.html dentro la cartella gantt_dnd)
+gantt_dnd = components.declare_component(
+    "gantt_dnd",
+    path=str(Path(__file__).parent / "gantt_dnd"),
+)
 
 # =========================
 # GIORNI LAVORATIVI (LUN-VEN)
@@ -643,11 +655,63 @@ if "consegne" in st.session_state:
     st.dataframe(st.session_state["consegne"], use_container_width=True)
 
 if "piano" in st.session_state:
+
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
+    # =========================
+    # GANTT DRAG & DROP (COMPONENTE)
+    # =========================
+    st.subheader("🟦 Gantt Drag & Drop (sposta il GRUPPO)")
+
+    df_drag = pd.DataFrame(st.session_state.get("piano", []))
+    if not df_drag.empty:
+        df_drag["Data"] = pd.to_datetime(df_drag["Data"])
+        df_drag = df_drag[df_drag["Data"].dt.weekday < 5]
+
+        g = (
+            df_drag.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
+                   .agg(start=("Data", "min"), end=("Data", "max"))
+        )
+        g["end"] = g["end"] + pd.Timedelta(days=1)
+
+        tasks = []
+        for _, r in g.iterrows():
+            gruppo = str(r["Gruppo"])
+            nome = f"G{gruppo} | {r['Cliente']} | {r['Prodotto']}"
+            tasks.append({
+                "id": gruppo,
+                "name": nome,
+                "start": r["start"].strftime("%Y-%m-%d"),
+                "end": r["end"].strftime("%Y-%m-%d"),
+            })
+
+        # Il componente deve ritornare: {"gruppo":"X","nuova_data_inizio":"YYYY-MM-DD"}
+        res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
+
+        if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
+            gruppo_drag = str(res["gruppo"])
+            nuova_data = str(res["nuova_data_inizio"])
+
+            # aggiorno data_inizio_gruppo per TUTTE le righe del gruppo
+            for o in dati.get("ordini", []):
+                if str(o.get("ordine_gruppo")) == gruppo_drag:
+                    o["data_inizio_gruppo"] = nuova_data
+
+            salva_dati(dati)
+
+            # ricalcolo tutto
+            consegne, piano = calcola_piano(dati)
+            st.session_state["consegne"] = consegne
+            st.session_state["piano"] = piano
+
+            st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data} (ricalcolato ✅)")
+            st.rerun()
+    else:
+        st.info("Nessun dato per il Drag & Drop.")
+
     # -----------------------------
-    # GANTT GIORNO PER GIORNO (lun-ven)
+    # GANTT (ALTair) - come prima
     # -----------------------------
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
@@ -762,11 +826,10 @@ if "piano" in st.session_state:
         )
 
         chart = (bars + text).properties(
-            height=max(380, 70 * len(agg["Commessa"].unique())),  # più spazio per riga
+            height=max(380, 70 * len(agg["Commessa"].unique())),
         )
 
         st.altair_chart(chart, use_container_width=True)
-
 
 
 
