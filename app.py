@@ -115,7 +115,10 @@ def calcola_piano(dati):
     }
 
     piano = []
-    consegne = []
+    consegne_righe = []
+
+    # QUI raccogliamo la consegna “vera” per ordine_gruppo (massima data)
+    consegna_per_gruppo = {}  # gruppo -> dict info
 
     for o in ordini:
         materiale = o.get("materiale", "PVC")
@@ -161,9 +164,10 @@ def calcola_piano(dati):
                 giorno = giorno + timedelta(days=1)
                 usati = 0
 
+        # fine riga -> giorno è la fine di questa riga
         o["consegna_stimata"] = str(giorno)
 
-        consegne.append({
+        consegne_righe.append({
             "Ordine": o.get("id", ""),
             "Gruppo": o.get("ordine_gruppo", ""),
             "Cliente": o.get("cliente", ""),
@@ -174,14 +178,58 @@ def calcola_piano(dati):
             "Vetri_totali": o.get("vetri_totali", ""),
             "Tempo_minuti": tempo_totale,
             "Richiesta": o.get("data_richiesta", ""),
-            "Stimata": str(giorno)
+            "Stimata_riga": str(giorno)
         })
+
+        # --- AGGREGAZIONE PER ORDINE (GRUPPO) ---
+        gruppo = o.get("ordine_gruppo", "")
+        if gruppo == "":
+            gruppo = "0"
+
+        # inizializza info gruppo se non esiste
+        if gruppo not in consegna_per_gruppo:
+            consegna_per_gruppo[gruppo] = {
+                "Gruppo": gruppo,
+                "Cliente": o.get("cliente", ""),
+                "Prodotto": o.get("prodotto", ""),
+                "Richiesta": o.get("data_richiesta", ""),
+                "Tempo_totale_minuti": 0,
+                "Stimata": str(giorno)  # per ora
+            }
+
+        # aggiorna tot minuti gruppo
+        consegna_per_gruppo[gruppo]["Tempo_totale_minuti"] += tempo_totale
+
+        # aggiorna richiesta (prendiamo la più “vicina”, cioè la minima)
+        try:
+            req_old = date.fromisoformat(consegna_per_gruppo[gruppo]["Richiesta"])
+            req_new = date.fromisoformat(o.get("data_richiesta", str(oggi)))
+            if req_new < req_old:
+                consegna_per_gruppo[gruppo]["Richiesta"] = str(req_new)
+        except Exception:
+            pass
+
+        # aggiorna consegna effettiva = MASSIMA data tra righe
+        try:
+            end_old = date.fromisoformat(consegna_per_gruppo[gruppo]["Stimata"])
+            end_new = date.fromisoformat(str(giorno))
+            if end_new > end_old:
+                consegna_per_gruppo[gruppo]["Stimata"] = str(end_new)
+        except Exception:
+            # se parsing fallisce, sovrascrivi
+            consegna_per_gruppo[gruppo]["Stimata"] = str(giorno)
 
         stato[materiale]["giorno"] = giorno
         stato[materiale]["usati"] = usati
 
     salva_dati(dati)
-    return consegne, piano
+
+    # Consegne FINALi = una riga per ordine (gruppo)
+    consegne_ordini = list(consegna_per_gruppo.values())
+
+    # Ritorniamo consegne “per ordine”, così hai UNA sola data consegna
+    return consegne_ordini, piano
+
 
 
 # =========================
