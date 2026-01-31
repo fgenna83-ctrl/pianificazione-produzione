@@ -5,15 +5,6 @@ import os
 import hashlib
 import pandas as pd
 import altair as alt
-def prossimo_giorno_lavorativo(d):
-    # 0=lun,1=mar,2=mer,3=gio,4=ven,5=sab,6=dom
-    while d.weekday() >= 5:
-        d = d + timedelta(days=1)
-    return d
-
-def aggiungi_giorno_lavorativo(d):
-    d = d + timedelta(days=1)
-    return prossimo_giorno_lavorativo(d)
 
 FILE_DATI = "dati_produzione.json"
 
@@ -24,6 +15,20 @@ CAPACITA_MINUTI_GIORNALIERA = {
 }
 
 MINUTI_8_ORE = 8 * 60  # 480
+
+
+# =========================
+# GIORNI LAVORATIVI (LUN-VEN)
+# =========================
+def prossimo_giorno_lavorativo(d):
+    while d.weekday() >= 5:  # 5=sabato, 6=domenica
+        d = d + timedelta(days=1)
+    return d
+
+
+def aggiungi_giorno_lavorativo(d):
+    d = d + timedelta(days=1)
+    return prossimo_giorno_lavorativo(d)
 
 
 # =========================
@@ -111,15 +116,16 @@ def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetr
 
 
 # =========================
-# PIANIFICAZIONE (spezzata su più giorni)
+# PIANIFICAZIONE (spezzata su più giorni) - NO WEEKEND
 # =========================
 def calcola_piano(dati):
     ordini = dati.get("ordini", [])
     if not ordini:
         return [], []
-    oggi = prossimo_giorno_lavorativo(oggi)
 
+    # ✅ FIX: prima assegno oggi, poi lo rendo lavorativo
     oggi = date.today()
+    oggi = prossimo_giorno_lavorativo(oggi)
 
     def safe_date(s):
         try:
@@ -145,7 +151,7 @@ def calcola_piano(dati):
         g = str(g)
         gruppi_map.setdefault(g, []).append(o)
 
-    # Ordino le commesse per data richiesta (min) e poi per gruppo (numero se possibile)
+    # Ordino le commesse per data richiesta (min) e poi per gruppo
     def gruppo_sort_key(g):
         righe = gruppi_map[g]
         min_req = min(safe_date(r.get("data_richiesta")) for r in righe)
@@ -172,7 +178,6 @@ def calcola_piano(dati):
             tempo_totale = 0
 
         remaining = tempo_totale
-
         qta_strutture = int(o.get("quantita_strutture", 0) or 0)
 
         while remaining > 0:
@@ -206,9 +211,9 @@ def calcola_piano(dati):
                 "Strutture_prodotte": round(strutture_oggi, 2),
             })
 
+            # se non finito e ho esaurito la capacità -> domani (lavorativo)
             if remaining > 0 and usati >= cap:
                 giorno = aggiungi_giorno_lavorativo(giorno)
-
                 usati = 0
 
         # fine riga
@@ -224,7 +229,7 @@ def calcola_piano(dati):
     for g in gruppi_ordinati:
         righe = gruppi_map[g]
 
-        # Ordino le righe dentro la commessa in modo stabile
+        # Ordino le righe dentro la commessa
         righe.sort(key=lambda o: (o.get("materiale", "PVC"), int(o.get("id", 0) or 0)))
 
         # Pianifico tutte le righe della commessa
@@ -232,11 +237,11 @@ def calcola_piano(dati):
         for r in righe:
             fine_righe.append(pianifica_riga(r))
 
-        # Giorno fine commessa = massimo giorno tra tutte le righe (PVC + Alluminio)
+        # Giorno fine commessa
         fine_commessa = max(fine_righe) if fine_righe else stato["PVC"]["giorno"]
+        fine_commessa = prossimo_giorno_lavorativo(fine_commessa)  # sicurezza
 
         # Salvo consegna unica per commessa (gruppo)
-        # Cliente/Prodotto li prendo dalla prima riga
         base = righe[0] if righe else {}
         consegna_per_gruppo[g] = {
             "Gruppo": g,
@@ -247,10 +252,7 @@ def calcola_piano(dati):
             "Stimata": str(fine_commessa),
         }
 
-        # ✅ REGOLA CHIAVE:
-        # La prossima commessa può iniziare SOLO dal giorno fine_commessa,
-        # ma se una linea era ferma (finita prima), quel giorno ha usati=0 quindi può usare TUTTA la capacità.
-        # Quindi porto tutte le linee almeno a fine_commessa.
+        # porto tutte le linee almeno a fine_commessa
         for mat in stato:
             if stato[mat]["giorno"] < fine_commessa:
                 stato[mat]["giorno"] = fine_commessa
@@ -260,7 +262,6 @@ def calcola_piano(dati):
 
     consegne_ordini = list(consegna_per_gruppo.values())
 
-    # ordino consegne per gruppo numerico
     def grp_key(x):
         try:
             return int(x.get("Gruppo", 0))
@@ -268,10 +269,7 @@ def calcola_piano(dati):
             return 0
 
     consegne_ordini.sort(key=grp_key)
-
     return consegne_ordini, piano
-
-
 
 
 # =========================
@@ -396,9 +394,9 @@ st.divider()
 st.subheader("📋 Ordini (righe)")
 if dati.get("ordini"):
     st.dataframe(dati["ordini"], use_container_width=True)
-    
 else:
     st.info("Nessun ordine inserito.")
+
 st.markdown("## 🧹 Cancellazione")
 
 col_del1, col_del2 = st.columns(2)
@@ -410,7 +408,6 @@ with col_del1:
     st.markdown("### 🗑️ Cancella singola riga")
 
     if dati.get("ordini"):
-        # elenco righe
         righe_map = {}
         opzioni = []
         for o in dati["ordini"]:
@@ -427,11 +424,8 @@ with col_del1:
 
         if st.button("❌ Elimina riga selezionata", key="btn_delete_riga"):
             id_da_cancellare = righe_map[scelta_riga]
-
-            # elimina riga
             dati["ordini"] = [o for o in dati["ordini"] if int(o.get("id", -1)) != id_da_cancellare]
 
-            # rinumera ID per evitare buchi (puoi togliere questo blocco se non vuoi rinumerare)
             for i, o in enumerate(dati["ordini"], start=1):
                 o["id"] = i
 
@@ -462,7 +456,6 @@ with col_del2:
             if st.button("🔥 Elimina TUTTO l’ordine", key="btn_delete_gruppo"):
                 dati["ordini"] = [o for o in dati["ordini"] if str(o.get("ordine_gruppo")) != str(gruppo_sel)]
 
-                # rinumera ID
                 for i, o in enumerate(dati["ordini"], start=1):
                     o["id"] = i
 
@@ -507,112 +500,97 @@ if "piano" in st.session_state:
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
     # -----------------------------
-    # GANTT GIORNO PER GIORNO (Bello)
+    # GANTT GIORNO PER GIORNO (lun-ven)
     # -----------------------------
-   
-st.subheader("📊 Gantt Produzione (giorno per giorno)")
+    st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
-df = pd.DataFrame(st.session_state["piano"])
-if df.empty:
-    st.info("Nessun dato per il Gantt.")
-else:
-    # date
-    df["Data"] = pd.to_datetime(df["Data"])
-# Tieni solo lunedì-venerdì (0=lunedì, 4=venerdì)
-    df = df[df["Data"].dt.weekday < 5]
-
-    # nome commessa "bello"
-    df["Commessa"] = (
-        "Gruppo " + df["Gruppo"].astype(str)
-        + " | " + df["Cliente"].astype(str)
-        + " | " + df["Prodotto"].astype(str)
-    )
-
-    # aggrego per giorno + commessa (sommo strutture e minuti)
-    agg = (
-        df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
-          .agg(
-              strutture=("Strutture_prodotte", "sum"),
-              minuti=("Minuti_prodotti", "sum")
-          )
-    )
-
-    # rendo il tile 1 giorno
-    agg["inizio"] = agg["Data"]
-    agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
-
-    # testo da mostrare dentro al tile
-    agg["label"] = agg["Commessa"] + " | " + agg["strutture"].round(1).astype(str) + " strutt."
-
-    # Controlli estetici
-    colA, colB, colC = st.columns([1, 1, 2])
-    with colA:
-        show_minutes = st.checkbox("Mostra minuti nel box", value=False)
-    with colB:
-        ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0)
-    with colC:
-        st.caption("Ogni rettangolo = 1 giorno di produzione per una commessa. Testo = strutture prodotte.")
-
-    if show_minutes:
-        agg["label"] = (
-        agg["Commessa"]
-        + "\n"
-        + agg["strutture"].round(1).astype(str)
-        + " strutt. | "
-        + agg["minuti"].astype(int).astype(str)
-        + " min"
-    )
-
-
-    sort_y = None
-    if ordina == "Per Gruppo":
-        sort_y = alt.SortField(field="Gruppo", order="ascending")
+    df = pd.DataFrame(st.session_state["piano"])
+    if df.empty:
+        st.info("Nessun dato per il Gantt.")
     else:
-        sort_y = alt.SortField(field="Cliente", order="ascending")
+        df["Data"] = pd.to_datetime(df["Data"])
+        df = df[df["Data"].dt.weekday < 5]  # lun-ven
 
-    base = alt.Chart(agg).encode(
-        y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
-        x=alt.X(
-    "yearmonthdate(inizio):T",
-    title="Giorni",
-    axis=alt.Axis(
-        format="%d/%m",
-        labelAngle=0
-    )
-),
-        x2="fine:T",
-        tooltip=[
-            alt.Tooltip("Data:T", title="Giorno"),
-            alt.Tooltip("Commessa:N", title="Commessa"),
-            alt.Tooltip("strutture:Q", title="Strutture prodotte"),
-            alt.Tooltip("minuti:Q", title="Minuti prodotti"),
-        ],
-    )
+        df["Commessa"] = (
+            "Gruppo " + df["Gruppo"].astype(str)
+            + " | " + df["Cliente"].astype(str)
+            + " | " + df["Prodotto"].astype(str)
+        )
 
-    # rettangoli giorno-per-giorno
-    bars = base.mark_bar(cornerRadius=6).encode(
-        color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
-    )
+        agg = (
+            df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
+              .agg(
+                  strutture=("Strutture_prodotte", "sum"),
+                  minuti=("Minuti_prodotti", "sum")
+              )
+        )
 
-    # testo dentro i rettangoli
-    text = alt.Chart(agg).mark_text(
-    align="left",
-    baseline="top",
-    dx=6,
-    dy=6,
-    fontSize=12,
-    lineBreak="\n"
-).encode(
-        y=alt.Y("Commessa:N", sort=sort_y),
-        x=alt.X("inizio:T"),
-        text="label:N"
-    )
+        agg["inizio"] = agg["Data"]
+        agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
 
-    chart = (bars + text).properties(
-        height=max(300, 45 * len(agg["Commessa"].unique())),
-    ).interactive()
+        agg["label"] = agg["Commessa"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
 
-    st.altair_chart(chart, use_container_width=True)
+        colA, colB, colC = st.columns([1, 1, 2])
+        with colA:
+            show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
+        with colB:
+            ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
+        with colC:
+            st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
+
+        if show_minutes:
+            agg["label"] = (
+                agg["Commessa"]
+                + "\n"
+                + agg["strutture"].round(1).astype(str)
+                + " strutt. | "
+                + agg["minuti"].astype(int).astype(str)
+                + " min"
+            )
+
+        if ordina == "Per Gruppo":
+            sort_y = alt.SortField(field="Gruppo", order="ascending")
+        else:
+            sort_y = alt.SortField(field="Cliente", order="ascending")
+
+        base = alt.Chart(agg).encode(
+            y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
+            x=alt.X(
+                "yearmonthdate(inizio):T",
+                title="Giorni",
+                axis=alt.Axis(format="%d/%m", labelAngle=0)
+            ),
+            x2="fine:T",
+            tooltip=[
+                alt.Tooltip("Data:T", title="Giorno"),
+                alt.Tooltip("Commessa:N", title="Commessa"),
+                alt.Tooltip("strutture:Q", title="Strutture prodotte"),
+                alt.Tooltip("minuti:Q", title="Minuti prodotti"),
+            ],
+        )
+
+        bars = base.mark_bar(cornerRadius=6).encode(
+            color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
+        )
+
+        text = alt.Chart(agg).mark_text(
+            align="left",
+            baseline="top",
+            dx=6,
+            dy=6,
+            fontSize=12,
+            lineBreak="\n"
+        ).encode(
+            y=alt.Y("Commessa:N", sort=sort_y),
+            x=alt.X("inizio:T"),
+            text="label:N"
+        )
+
+        chart = (bars + text).properties(
+            height=max(300, 45 * len(agg["Commessa"].unique())),
+        ).interactive()
+
+        st.altair_chart(chart, use_container_width=True)
 
 
 
