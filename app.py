@@ -498,85 +498,7 @@ if "piano" in st.session_state:
     # -----------------------------
     # GANTT GIORNO PER GIORNO (Bello)
     # -----------------------------
-    st.subheader("📊 Gantt Produzione (giorno per giorno)")
-
-    df = pd.DataFrame(st.session_state["piano"])
-    if df.empty:
-        st.info("Nessun dato per il Gantt.")
-    else:
-        df["Data"] = pd.to_datetime(df["Data"])
-
-        df["Commessa"] = (
-            "Gruppo " + df["Gruppo"].astype(str)
-            + " | " + df["Cliente"].astype(str)
-            + " | " + df["Prodotto"].astype(str)
-        )
-
-        agg = (
-            df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
-              .agg(
-                  strutture=("Strutture_prodotte", "sum"),
-                  minuti=("Minuti_prodotti", "sum")
-              )
-        )
-
-        agg["inizio"] = agg["Data"]
-        agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
-
-        agg["label"] = agg["Commessa"] + " | " + agg["strutture"].round(1).astype(str) + " strutt."
-
-        colA, colB, colC = st.columns([1, 1, 2])
-        with colA:
-            show_minutes = st.checkbox("Mostra minuti nel box", value=False)
-        with colB:
-            ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
-        with colC:
-            st.caption("Ogni rettangolo = 1 giorno di produzione per una commessa. Testo = strutture prodotte.")
-
-        if show_minutes:
-            agg["label"] = (
-                agg["Commessa"]
-                + " | " + agg["strutture"].round(1).astype(str) + " strutt."
-                + " | " + agg["minuti"].astype(int).astype(str) + " min"
-            )
-
-        if ordina == "Per Gruppo":
-            sort_y = alt.SortField(field="Gruppo", order="ascending")
-        else:
-            sort_y = alt.SortField(field="Cliente", order="ascending")
-
-        base = alt.Chart(agg).encode(
-            y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
-            x=alt.X("inizio:T", title="Giorni"),
-            x2="fine:T",
-            tooltip=[
-                alt.Tooltip("Data:T", title="Giorno"),
-                alt.Tooltip("Commessa:N", title="Commessa"),
-                alt.Tooltip("strutture:Q", title="Strutture prodotte"),
-                alt.Tooltip("minuti:Q", title="Minuti prodotti"),
-            ],
-        )
-
-        bars = base.mark_bar(cornerRadius=6).encode(
-            color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
-        )
-
-        text = alt.Chart(agg).mark_text(
-            align="left",
-            baseline="middle",
-            dx=6,
-            fontSize=12
-        ).encode(
-            y=alt.Y("Commessa:N", sort=sort_y),
-            x=alt.X("inizio:T"),
-            text="label:N"
-        )
-
-        chart = (bars + text).properties(
-            height=max(300, 45 * len(agg["Commessa"].unique())),
-        ).interactive()
-
-        st.altair_chart(chart, use_container_width=True)
+   
 st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
 df = pd.DataFrame(st.session_state["piano"])
@@ -661,4 +583,5 @@ else:
     ).interactive()
 
     st.altair_chart(chart, use_container_width=True)
+
 
