@@ -7,6 +7,35 @@ import pandas as pd
 import altair as alt
 import streamlit.components.v1 as components
 from pathlib import Path
+from pathlib import Path
+import streamlit.components.v1 as components
+
+# =========================
+# COMPONENT (GANTT DRAG&DROP) - SAFE
+# =========================
+def _find_gantt_component_dir():
+    # 1) stessa cartella di app.py
+    try:
+        p = Path(__file__).resolve().parent / "gantt_dnd"
+        if p.exists() and p.is_dir():
+            return p
+    except Exception:
+        pass
+
+    # 2) working directory (alcuni deploy)
+    p = Path.cwd() / "gantt_dnd"
+    if p.exists() and p.is_dir():
+        return p
+
+    return None
+
+
+_gantt_dir = _find_gantt_component_dir()
+
+if _gantt_dir is not None:
+    gantt_dnd = components.declare_component("gantt_dnd", path=str(_gantt_dir))
+else:
+    gantt_dnd = None
 
 # =========================
 # COMPONENT (GANTT DRAG&DROP) - SAFE
