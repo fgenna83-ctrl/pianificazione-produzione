@@ -7,11 +7,21 @@ import pandas as pd
 import altair as alt
 import streamlit.components.v1 as components
 from pathlib import Path
-from pathlib import Path
-import streamlit.components.v1 as components
+
+
+FILE_DATI = "dati_produzione.json"
+
+# Capacità giornaliera fissa per materiale (minuti/giorno)
+CAPACITA_MINUTI_GIORNALIERA = {
+    "PVC": 4500,
+    "Alluminio": 3000
+}
+
+MINUTI_8_ORE = 8 * 60  # 480
+
 
 # =========================
-# COMPONENT (GANTT DRAG&DROP) - SAFE
+# COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
 # =========================
 def _find_gantt_component_dir():
     # 1) stessa cartella di app.py
@@ -31,84 +41,11 @@ def _find_gantt_component_dir():
 
 
 _gantt_dir = _find_gantt_component_dir()
-
 if _gantt_dir is not None:
     gantt_dnd = components.declare_component("gantt_dnd", path=str(_gantt_dir))
 else:
     gantt_dnd = None
 
-# =========================
-# COMPONENT (GANTT DRAG&DROP) - SAFE
-# =========================
-def get_component_dir() -> Path:
-    # prova 1: cartella dove sta app.py
-    try:
-        p1 = Path(__file__).resolve().parent / "gantt_dnd"
-        if p1.exists():
-            return p1
-    except Exception:
-        pass
-
-    # prova 2: cwd (utile in alcuni deploy)
-    p2 = Path.cwd() / "gantt_dnd"
-    if p2.exists():
-        return p2
-
-    return Path("")  # non trovato
-
-
-_COMPONENT_DIR = get_component_dir()
-
-if _COMPONENT_DIR and str(_COMPONENT_DIR) != "." and _COMPONENT_DIR.exists():
-    # =========================
-# COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
-# =========================
- def _find_gantt_component_dir() -> Path | None:
-    # 1) stessa cartella di app.py
-    try:
-        p = Path(__file__).resolve().parent / "gantt_dnd"
-        if p.exists() and p.is_dir():
-            return p
-    except Exception:
-        pass
-
-    # 2) working directory (alcuni deploy)
-    p = Path.cwd() / "gantt_dnd"
-    if p.exists() and p.is_dir():
-        return p
-
-    return None
-
-
-_gantt_dir = _find_gantt_component_dir()
-
-if _gantt_dir is not None:
-    gantt_dnd = components.declare_component("gantt_dnd", path=str(_gantt_dir))
-else:
-    gantt_dnd = None
-
-
-
-
-FILE_DATI = "dati_produzione.json"
-
-# Capacità giornaliera fissa per materiale (minuti/giorno)
-CAPACITA_MINUTI_GIORNALIERA = {
-    "PVC": 4500,
-    "Alluminio": 3000
-}
-
-MINUTI_8_ORE = 8 * 60  # 480
-
-# =========================
-# COMPONENT (GANTT DRAG&DROP)
-# =========================
-# ATTENZIONE: qui serve una cartella componente, es: ./gantt_dnd/index.html
-# (il tuo file html va come index.html dentro la cartella gantt_dnd)
-gantt_dnd = components.declare_component(
-    "gantt_dnd",
-    path=str(Path(__file__).parent / "gantt_dnd"),
-)
 
 # =========================
 # GIORNI LAVORATIVI (LUN-VEN)
@@ -246,10 +183,7 @@ def calcola_piano(dati):
     def gruppo_sort_key(g):
         righe = gruppi_map[g]
         d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(oggi)))
-        try:
-            start = safe_date(d0)
-        except Exception:
-            start = oggi
+        start = safe_date(d0)
         try:
             gnum = int(g)
         except Exception:
@@ -350,7 +284,7 @@ def calcola_piano(dati):
             "Gruppo": g,
             "Cliente": base.get("cliente", ""),
             "Prodotto": base.get("prodotto", ""),
-            "Richiesta": "",  # non ti interessa più
+            "Richiesta": "",
             "Tempo_totale_minuti": int(sum(int(r.get("tempo_minuti", 0) or 0) for r in righe)),
             "Stimata": str(fine_commessa),
         }
@@ -409,7 +343,7 @@ with col2:
 
     cliente = st.text_input("Cliente")
     prodotto = st.text_input("Prodotto/commessa")
-    data_richiesta = st.date_input("Data richiesta consegna", value=date.today())  # rimane, ma non guida la pianificazione
+    data_richiesta = st.date_input("Data richiesta consegna", value=date.today())
 
     st.markdown("### Aggiungi riga ordine")
 
@@ -420,9 +354,7 @@ with col2:
     if tipologia == "Battente":
         vetri_totali = st.number_input(
             "Numero vetri TOTALI per questa riga (somma su tutte le strutture)",
-            min_value=1,
-            value=1,
-            step=1
+            min_value=1, value=1, step=1
         )
     else:
         vetri_totali = 0
@@ -484,7 +416,7 @@ with col2:
                     "vetri_totali": r["vetri_totali"],
                     "tempo_minuti": int(r["tempo_minuti"]),
                     "data_richiesta": str(data_richiesta),
-                    "data_inizio_gruppo": str(data_richiesta),  # ✅ nuova: guida la pianificazione / gantt
+                    "data_inizio_gruppo": str(data_richiesta),
                     "inserito_il": str(date.today())
                 }
                 dati["ordini"].append(nuovo)
@@ -505,7 +437,6 @@ st.markdown("## 🧹 Cancellazione")
 st.markdown("## ✏️ Modifica riga ordine")
 
 if dati.get("ordini"):
-    # Mappa label -> id riga
     edit_map = {}
     opzioni_edit = []
     for o in dati["ordini"]:
@@ -521,9 +452,8 @@ if dati.get("ordini"):
         edit_map[label] = rid
 
     scelta_edit = st.selectbox("Seleziona riga da modificare", opzioni_edit, key="sel_riga_edit")
-
-    # Recupero riga selezionata
     id_edit = edit_map[scelta_edit]
+
     riga = None
     for o in dati["ordini"]:
         if int(o.get("id", -1)) == id_edit:
@@ -542,14 +472,12 @@ if dati.get("ordini"):
             nuovo_prodotto = st.text_input("Prodotto/commessa", value=str(riga.get("prodotto", "")), key=f"edit_prodotto_{id_edit}")
 
         with colE2:
-            # data richiesta
             try:
                 dr = date.fromisoformat(str(riga.get("data_richiesta", str(date.today()))))
             except Exception:
                 dr = date.today()
             nuova_data_richiesta = st.date_input("Data richiesta consegna", value=dr, key=f"edit_data_{id_edit}")
 
-            # ✅ data inizio gruppo (questa aggiorna il gant/piano)
             try:
                 di = date.fromisoformat(str(riga.get("data_inizio_gruppo", str(dr))))
             except Exception:
@@ -583,7 +511,6 @@ if dati.get("ordini"):
                 key=f"edit_qta_{id_edit}"
             )
 
-        # Vetri totali solo se battente
         if nuova_tipologia == "Battente":
             nuova_vetri_totali = st.number_input(
                 "Vetri TOTALI (somma su tutte le strutture della riga)",
@@ -595,7 +522,6 @@ if dati.get("ordini"):
         else:
             nuova_vetri_totali = 0
 
-        # Preview minuti aggiornati
         minuti_riga_new, minuti_medi_new = minuti_preview(
             nuovo_materiale,
             nuova_tipologia,
@@ -608,7 +534,6 @@ if dati.get("ordini"):
 
         with colS1:
             if st.button("💾 Salva modifiche", key=f"btn_save_edit_{id_edit}"):
-                # aggiorno riga
                 riga["cliente"] = nuovo_cliente
                 riga["prodotto"] = nuovo_prodotto
                 riga["data_richiesta"] = str(nuova_data_richiesta)
@@ -618,7 +543,6 @@ if dati.get("ordini"):
                 riga["vetri_totali"] = int(nuova_vetri_totali) if nuova_tipologia == "Battente" else ""
                 riga["tempo_minuti"] = int(minuti_riga_new)
 
-                # ✅ aggiorno la data inizio per TUTTE le righe del gruppo
                 g_sel = str(riga.get("ordine_gruppo"))
                 for o in dati["ordini"]:
                     if str(o.get("ordine_gruppo")) == g_sel:
@@ -626,7 +550,6 @@ if dati.get("ordini"):
 
                 salva_dati(dati)
 
-                # ✅ Forzo ricalcolo piano + gant
                 consegne, piano = calcola_piano(dati)
                 st.session_state["consegne"] = consegne
                 st.session_state["piano"] = piano
@@ -641,9 +564,6 @@ else:
 
 col_del1, col_del2 = st.columns(2)
 
-# =========================
-# Cancella singola riga (per ID)
-# =========================
 with col_del1:
     st.markdown("### 🗑️ Cancella singola riga")
 
@@ -677,10 +597,6 @@ with col_del1:
     else:
         st.info("Nessuna riga presente.")
 
-
-# =========================
-# Cancella ordine completo (per Gruppo ordine_gruppo)
-# =========================
 with col_del2:
     st.markdown("### 🧨 Cancella ordine completo (Gruppo)")
 
@@ -736,7 +652,6 @@ if "consegne" in st.session_state:
     st.dataframe(st.session_state["consegne"], use_container_width=True)
 
 if "piano" in st.session_state:
-
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
@@ -777,14 +692,12 @@ if "piano" in st.session_state:
                 gruppo_drag = str(res["gruppo"])
                 nuova_data = str(res["nuova_data_inizio"])
 
-                # aggiorno data_inizio_gruppo per TUTTE le righe del gruppo
                 for o in dati.get("ordini", []):
                     if str(o.get("ordine_gruppo")) == gruppo_drag:
                         o["data_inizio_gruppo"] = nuova_data
 
                 salva_dati(dati)
 
-                # ricalcolo tutto
                 consegne, piano = calcola_piano(dati)
                 st.session_state["consegne"] = consegne
                 st.session_state["piano"] = piano
@@ -795,7 +708,7 @@ if "piano" in st.session_state:
             st.info("Nessun dato per il Drag & Drop.")
 
     # -----------------------------
-    # GANTT CLASSICO (ALTair) - sempre disponibile
+    # GANTT CLASSICO (Altair) - sempre disponibile
     # -----------------------------
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
