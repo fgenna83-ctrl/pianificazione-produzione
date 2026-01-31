@@ -544,10 +544,12 @@ else:
         agg["label"] = (
         agg["Commessa"]
         + "\n"
-        + agg["strutture"].round(1).astype(str) + " strutt."
-        + "\n"
-        + agg["minuti"].astype(int).astype(str) + " min"
-        )
+        + agg["strutture"].round(1).astype(str)
+        + " strutt. | "
+        + agg["minuti"].astype(int).astype(str)
+        + " min"
+    )
+
 
     sort_y = None
     if ordina == "Per Gruppo":
@@ -591,6 +593,7 @@ else:
     ).interactive()
 
     st.altair_chart(chart, use_container_width=True)
+
 
 
 
