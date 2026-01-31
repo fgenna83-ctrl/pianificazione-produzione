@@ -398,6 +398,129 @@ else:
     st.info("Nessun ordine inserito.")
 
 st.markdown("## 🧹 Cancellazione")
+st.markdown("## ✏️ Modifica riga ordine")
+
+if dati.get("ordini"):
+    # Mappa label -> id riga
+    edit_map = {}
+    opzioni_edit = []
+    for o in dati["ordini"]:
+        rid = int(o.get("id", 0))
+        gruppo = o.get("ordine_gruppo", "")
+        cliente_lbl = o.get("cliente", "")
+        prodotto_lbl = o.get("prodotto", "")
+        materiale_lbl = o.get("materiale", "")
+        tipologia_lbl = o.get("tipologia", "")
+        minuti_lbl = o.get("tempo_minuti", "")
+        label = f"ID {rid} | Gruppo {gruppo} | {cliente_lbl} | {prodotto_lbl} | {materiale_lbl} | {tipologia_lbl} | {minuti_lbl} min"
+        opzioni_edit.append(label)
+        edit_map[label] = rid
+
+    scelta_edit = st.selectbox("Seleziona riga da modificare", opzioni_edit, key="sel_riga_edit")
+
+    # Recupero riga selezionata
+    id_edit = edit_map[scelta_edit]
+    riga = None
+    for o in dati["ordini"]:
+        if int(o.get("id", -1)) == id_edit:
+            riga = o
+            break
+
+    if riga is None:
+        st.error("Riga non trovata.")
+    else:
+        st.info(f"Stai modificando: ID {id_edit} (Gruppo {riga.get('ordine_gruppo')})")
+
+        colE1, colE2, colE3 = st.columns(3)
+
+        with colE1:
+            nuovo_cliente = st.text_input("Cliente", value=str(riga.get("cliente", "")), key=f"edit_cliente_{id_edit}")
+            nuovo_prodotto = st.text_input("Prodotto/commessa", value=str(riga.get("prodotto", "")), key=f"edit_prodotto_{id_edit}")
+
+        with colE2:
+            # data richiesta
+            try:
+                dr = date.fromisoformat(str(riga.get("data_richiesta", str(date.today()))))
+            except Exception:
+                dr = date.today()
+            nuova_data_richiesta = st.date_input("Data richiesta consegna", value=dr, key=f"edit_data_{id_edit}")
+
+            nuovo_materiale = st.selectbox(
+                "Materiale",
+                ["PVC", "Alluminio"],
+                index=0 if str(riga.get("materiale","PVC")) == "PVC" else 1,
+                key=f"edit_materiale_{id_edit}"
+            )
+
+        with colE3:
+            tipologie = ["Battente", "Scorrevole", "Struttura speciale"]
+            cur_tip = str(riga.get("tipologia", "Battente"))
+            idx_tip = tipologie.index(cur_tip) if cur_tip in tipologie else 0
+
+            nuova_tipologia = st.selectbox(
+                "Tipologia",
+                tipologie,
+                index=idx_tip,
+                key=f"edit_tipologia_{id_edit}"
+            )
+
+            nuova_qta = st.number_input(
+                "Quantità strutture",
+                min_value=1,
+                value=int(riga.get("quantita_strutture", 1) or 1),
+                step=1,
+                key=f"edit_qta_{id_edit}"
+            )
+
+        # Vetri totali solo se battente
+        if nuova_tipologia == "Battente":
+            nuova_vetri_totali = st.number_input(
+                "Vetri TOTALI (somma su tutte le strutture della riga)",
+                min_value=1,
+                value=int(riga.get("vetri_totali", 1) or 1),
+                step=1,
+                key=f"edit_vetri_{id_edit}"
+            )
+        else:
+            nuova_vetri_totali = 0
+
+        # Preview minuti aggiornati
+        minuti_riga_new, minuti_medi_new = minuti_preview(
+            nuovo_materiale,
+            nuova_tipologia,
+            int(nuova_qta),
+            int(nuova_vetri_totali)
+        )
+        st.success(f"⏱️ Nuovo tempo riga: {minuti_riga_new} minuti (≈ {minuti_medi_new} min/struttura)")
+
+        colS1, colS2 = st.columns([1, 3])
+
+        with colS1:
+            if st.button("💾 Salva modifiche", key=f"btn_save_edit_{id_edit}"):
+                # aggiorno riga
+                riga["cliente"] = nuovo_cliente
+                riga["prodotto"] = nuovo_prodotto
+                riga["data_richiesta"] = str(nuova_data_richiesta)
+                riga["materiale"] = nuovo_materiale
+                riga["tipologia"] = nuova_tipologia
+                riga["quantita_strutture"] = int(nuova_qta)
+                riga["vetri_totali"] = int(nuova_vetri_totali) if nuova_tipologia == "Battente" else ""
+                riga["tempo_minuti"] = int(minuti_riga_new)
+
+                salva_dati(dati)
+
+                # ✅ Forzo ricalcolo piano + gant
+                consegne, piano = calcola_piano(dati)
+                st.session_state["consegne"] = consegne
+                st.session_state["piano"] = piano
+
+                st.success("Riga modificata e piano ricalcolato ✅")
+                st.rerun()
+
+        with colS2:
+            st.caption("Nota: il tempo minuti viene ricalcolato automaticamente in base a materiale/tipologia/vetri.")
+else:
+    st.info("Nessuna riga presente da modificare.")
 
 col_del1, col_del2 = st.columns(2)
 
