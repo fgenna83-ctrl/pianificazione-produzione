@@ -354,8 +354,85 @@ st.divider()
 st.subheader("📋 Ordini (righe)")
 if dati.get("ordini"):
     st.dataframe(dati["ordini"], use_container_width=True)
+    
 else:
     st.info("Nessun ordine inserito.")
+st.markdown("## 🧹 Cancellazione")
+
+col_del1, col_del2 = st.columns(2)
+
+# =========================
+# Cancella singola riga (per ID)
+# =========================
+with col_del1:
+    st.markdown("### 🗑️ Cancella singola riga")
+
+    if dati.get("ordini"):
+        # elenco righe
+        righe_map = {}
+        opzioni = []
+        for o in dati["ordini"]:
+            rid = int(o.get("id", 0))
+            gruppo = o.get("ordine_gruppo", "")
+            materiale = o.get("materiale", "")
+            tipologia = o.get("tipologia", "")
+            minuti = o.get("tempo_minuti", "")
+            label = f"ID {rid} | Gruppo {gruppo} | {materiale} | {tipologia} | {minuti} min"
+            opzioni.append(label)
+            righe_map[label] = rid
+
+        scelta_riga = st.selectbox("Seleziona riga", opzioni, key="sel_riga_delete")
+
+        if st.button("❌ Elimina riga selezionata", key="btn_delete_riga"):
+            id_da_cancellare = righe_map[scelta_riga]
+
+            # elimina riga
+            dati["ordini"] = [o for o in dati["ordini"] if int(o.get("id", -1)) != id_da_cancellare]
+
+            # rinumera ID per evitare buchi (puoi togliere questo blocco se non vuoi rinumerare)
+            for i, o in enumerate(dati["ordini"], start=1):
+                o["id"] = i
+
+            salva_dati(dati)
+            st.session_state.pop("consegne", None)
+            st.session_state.pop("piano", None)
+            st.success(f"Eliminata riga ID {id_da_cancellare}")
+            st.rerun()
+    else:
+        st.info("Nessuna riga presente.")
+
+
+# =========================
+# Cancella ordine completo (per Gruppo ordine_gruppo)
+# =========================
+with col_del2:
+    st.markdown("### 🧨 Cancella ordine completo (Gruppo)")
+
+    if dati.get("ordini"):
+        gruppi = sorted({str(o.get("ordine_gruppo")) for o in dati["ordini"] if o.get("ordine_gruppo") is not None})
+
+        if gruppi:
+            gruppo_sel = st.selectbox("Seleziona Gruppo ordine", gruppi, key="sel_gruppo_delete")
+
+            righe_gruppo = [o for o in dati["ordini"] if str(o.get("ordine_gruppo")) == str(gruppo_sel)]
+            st.caption(f"Righe che verranno eliminate: {len(righe_gruppo)}")
+
+            if st.button("🔥 Elimina TUTTO l’ordine", key="btn_delete_gruppo"):
+                dati["ordini"] = [o for o in dati["ordini"] if str(o.get("ordine_gruppo")) != str(gruppo_sel)]
+
+                # rinumera ID
+                for i, o in enumerate(dati["ordini"], start=1):
+                    o["id"] = i
+
+                salva_dati(dati)
+                st.session_state.pop("consegne", None)
+                st.session_state.pop("piano", None)
+                st.success(f"Eliminato ordine (Gruppo {gruppo_sel})")
+                st.rerun()
+        else:
+            st.info("Nessun gruppo disponibile.")
+    else:
+        st.info("Nessun ordine presente.")
 
 c1, c2, c3 = st.columns([1, 1, 2])
 
