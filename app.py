@@ -109,106 +109,72 @@ def calcola_piano(dati):
 
     oggi = date.today()
 
-    # separo le righe per materiale e le ordino per data richiesta (poi gruppo, poi id)
     def safe_date(s):
         try:
             return date.fromisoformat(str(s))
         except Exception:
             return oggi
 
-    pvc = [o for o in ordini if o.get("materiale", "PVC") == "PVC"]
-    allu = [o for o in ordini if o.get("materiale", "PVC") == "Alluminio"]
-
-    pvc.sort(key=lambda o: (safe_date(o.get("data_richiesta")), str(o.get("ordine_gruppo")), int(o.get("id", 0))))
-    allu.sort(key=lambda o: (safe_date(o.get("data_richiesta")), str(o.get("ordine_gruppo")), int(o.get("id", 0))))
-
-    # stato per materiale
+    # Stato per materiale (minuti/giorno)
     stato = {
         "PVC": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]},
         "Alluminio": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]},
     }
 
     piano = []
-    consegna_per_gruppo = {}  # gruppo -> info consegna unica
-    # mantengo i minuti rimanenti per ogni riga (per spezzare su più giorni)
-    remaining_map = {}
+    consegna_per_gruppo = {}  # consegna unica per ordine (gruppo)
 
-    def init_remaining(o):
-        oid = int(o.get("id", 0))
-        if oid not in remaining_map:
-            t = int(o.get("tempo_minuti", 0))
-            remaining_map[oid] = max(0, t)
-        return remaining_map[oid]
+    # --- Raggruppo righe per commessa (ordine_gruppo) ---
+    gruppi_map = {}
+    for o in ordini:
+        g = o.get("ordine_gruppo", "0")
+        if g is None or str(g).strip() == "":
+            g = "0"
+        g = str(g)
+        gruppi_map.setdefault(g, []).append(o)
 
-    def update_gruppo(o, giorno_fine):
-        gruppo = o.get("ordine_gruppo", "")
-        if gruppo == "":
-            gruppo = "0"
-
-        if gruppo not in consegna_per_gruppo:
-            consegna_per_gruppo[gruppo] = {
-                "Gruppo": gruppo,
-                "Cliente": o.get("cliente", ""),
-                "Prodotto": o.get("prodotto", ""),
-                "Richiesta": o.get("data_richiesta", ""),
-                "Tempo_totale_minuti": 0,
-                "Stimata": str(giorno_fine),
-            }
-
-        # sommo minuti totali dell'ordine (gruppo)
+    # Ordino le commesse per data richiesta (min) e poi per gruppo (numero se possibile)
+    def gruppo_sort_key(g):
+        righe = gruppi_map[g]
+        min_req = min(safe_date(r.get("data_richiesta")) for r in righe)
         try:
-            consegna_per_gruppo[gruppo]["Tempo_totale_minuti"] += int(o.get("tempo_minuti", 0))
+            gnum = int(g)
         except Exception:
-            pass
+            gnum = 0
+        return (min_req, gnum, g)
 
-        # consegna unica = massimo tra le righe
-        try:
-            old = date.fromisoformat(consegna_per_gruppo[gruppo]["Stimata"])
-            new = date.fromisoformat(str(giorno_fine))
-            if new > old:
-                consegna_per_gruppo[gruppo]["Stimata"] = str(new)
-        except Exception:
-            consegna_per_gruppo[gruppo]["Stimata"] = str(giorno_fine)
+    gruppi_ordinati = sorted(gruppi_map.keys(), key=gruppo_sort_key)
 
-        # richiesta: teniamo la più “vicina” (minima)
-        try:
-            rold = date.fromisoformat(consegna_per_gruppo[gruppo]["Richiesta"])
-            rnew = safe_date(o.get("data_richiesta"))
-            if rnew < rold:
-                consegna_per_gruppo[gruppo]["Richiesta"] = str(rnew)
-        except Exception:
-            pass
+    # Pianifica una singola riga sulla sua linea materiale, spezzandola su più giorni
+    def pianifica_riga(o):
+        materiale = o.get("materiale", "PVC")
+        if materiale not in stato:
+            materiale = "PVC"
 
-    def pianifica_materiale(lista, materiale):
         cap = stato[materiale]["cap"]
         giorno = stato[materiale]["giorno"]
         usati = stato[materiale]["usati"]
 
-        i = 0
-        while i < len(lista):
-            o = lista[i]
-            oid = int(o.get("id", 0))
-            rem = init_remaining(o)
+        tempo_totale = int(o.get("tempo_minuti", 0) or 0)
+        if tempo_totale < 0:
+            tempo_totale = 0
 
-            if rem <= 0:
-                i += 1
-                continue
+        remaining = tempo_totale
 
+        qta_strutture = int(o.get("quantita_strutture", 0) or 0)
+
+        while remaining > 0:
             disponibili = cap - usati
             if disponibili <= 0:
-                # giorno pieno: passo al giorno dopo
                 giorno = giorno + timedelta(days=1)
                 usati = 0
                 continue
 
-            prodotti_oggi = min(disponibili, rem)
+            prodotti_oggi = min(disponibili, remaining)
             usati += prodotti_oggi
-            rem -= prodotti_oggi
-            remaining_map[oid] = rem
+            remaining -= prodotti_oggi
 
-            # stima strutture prodotte oggi (proporzionale ai minuti)
-            qta_strutture = int(o.get("quantita_strutture", 0) or 0)
-            tempo_totale = int(o.get("tempo_minuti", 0) or 0)
+            # strutture prodotte oggi (stima proporzionale ai minuti)
             strutture_oggi = 0.0
             if tempo_totale > 0 and qta_strutture > 0:
                 strutture_oggi = (prodotti_oggi / tempo_totale) * qta_strutture
@@ -228,34 +194,66 @@ def calcola_piano(dati):
                 "Strutture_prodotte": round(strutture_oggi, 2),
             })
 
-            # se ho finito questa riga, aggiorno consegna riga + consegna ordine
-            if rem <= 0:
-                o["consegna_stimata"] = str(giorno)
-                update_gruppo(o, giorno)
-                i += 1  # passo alla prossima riga
-            else:
-                # non finita: se ho riempito il giorno, domani continuo la stessa riga
-                if usati >= cap:
-                    giorno = giorno + timedelta(days=1)
-                    usati = 0
+            if remaining > 0 and usati >= cap:
+                giorno = giorno + timedelta(days=1)
+                usati = 0
 
-        # salvo stato finale
+        # fine riga
+        o["consegna_stimata"] = str(giorno)
+
+        # aggiorno stato materiale
         stato[materiale]["giorno"] = giorno
         stato[materiale]["usati"] = usati
 
-    # Pianifico PVC e Alluminio separatamente (ottimizza residui dentro ogni materiale)
-    pianifica_materiale(pvc, "PVC")
-    pianifica_materiale(allu, "Alluminio")
+        return giorno  # giorno di fine riga
+
+    # --- Pianificazione COMMESSA per COMMESSA (sequenza globale) ---
+    for g in gruppi_ordinati:
+        righe = gruppi_map[g]
+
+        # Ordino le righe dentro la commessa in modo stabile
+        righe.sort(key=lambda o: (o.get("materiale", "PVC"), int(o.get("id", 0) or 0)))
+
+        # Pianifico tutte le righe della commessa
+        fine_righe = []
+        for r in righe:
+            fine_righe.append(pianifica_riga(r))
+
+        # Giorno fine commessa = massimo giorno tra tutte le righe (PVC + Alluminio)
+        fine_commessa = max(fine_righe) if fine_righe else stato["PVC"]["giorno"]
+
+        # Salvo consegna unica per commessa (gruppo)
+        # Cliente/Prodotto li prendo dalla prima riga
+        base = righe[0] if righe else {}
+        consegna_per_gruppo[g] = {
+            "Gruppo": g,
+            "Cliente": base.get("cliente", ""),
+            "Prodotto": base.get("prodotto", ""),
+            "Richiesta": str(min(safe_date(r.get("data_richiesta")) for r in righe)) if righe else str(oggi),
+            "Tempo_totale_minuti": int(sum(int(r.get("tempo_minuti", 0) or 0) for r in righe)),
+            "Stimata": str(fine_commessa),
+        }
+
+        # ✅ REGOLA CHIAVE:
+        # La prossima commessa può iniziare SOLO dal giorno fine_commessa,
+        # ma se una linea era ferma (finita prima), quel giorno ha usati=0 quindi può usare TUTTA la capacità.
+        # Quindi porto tutte le linee almeno a fine_commessa.
+        for mat in stato:
+            if stato[mat]["giorno"] < fine_commessa:
+                stato[mat]["giorno"] = fine_commessa
+                stato[mat]["usati"] = 0
 
     salva_dati(dati)
 
     consegne_ordini = list(consegna_per_gruppo.values())
-    # ordino consegne per gruppo (numero se possibile)
+
+    # ordino consegne per gruppo numerico
     def grp_key(x):
         try:
             return int(x.get("Gruppo", 0))
         except Exception:
             return 0
+
     consegne_ordini.sort(key=grp_key)
 
     return consegne_ordini, piano
