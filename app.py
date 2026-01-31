@@ -494,112 +494,89 @@ if "consegne" in st.session_state:
 if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
-    st.subheader("📊 Gantt Produzione")
+   st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
-    df = pd.DataFrame(st.session_state["piano"])
-    if df.empty:
-        st.info("Nessun dato per il Gantt.")
+df = pd.DataFrame(st.session_state["piano"])
+if df.empty:
+    st.info("Nessun dato per il Gantt.")
+else:
+    # date
+    df["Data"] = pd.to_datetime(df["Data"])
+
+    # nome commessa "bello"
+    df["Commessa"] = (
+        "Gruppo " + df["Gruppo"].astype(str)
+        + " | " + df["Cliente"].astype(str)
+        + " | " + df["Prodotto"].astype(str)
+    )
+
+    # aggrego per giorno + commessa (sommo strutture e minuti)
+    agg = (
+        df.groupby(["Data", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
+          .agg(
+              strutture=("Strutture_prodotte", "sum"),
+              minuti=("Minuti_prodotti", "sum")
+          )
+    )
+
+    # rendo il tile 1 giorno
+    agg["inizio"] = agg["Data"]
+    agg["fine"] = agg["Data"] + pd.Timedelta(days=1)
+
+    # testo da mostrare dentro al tile
+    agg["label"] = agg["Commessa"] + " | " + agg["strutture"].round(1).astype(str) + " strutt."
+
+    # Controlli estetici
+    colA, colB, colC = st.columns([1, 1, 2])
+    with colA:
+        show_minutes = st.checkbox("Mostra minuti nel box", value=False)
+    with colB:
+        ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0)
+    with colC:
+        st.caption("Ogni rettangolo = 1 giorno di produzione per una commessa. Testo = strutture prodotte.")
+
+    if show_minutes:
+        agg["label"] = agg["Commessa"] + " | " + agg["strutture"].round(1).astype(str) + " strutt. | " + agg["minuti"].astype(int).astype(str) + " min"
+
+    sort_y = None
+    if ordina == "Per Gruppo":
+        sort_y = alt.SortField(field="Gruppo", order="ascending")
     else:
-        # parsing date
-        df["Data"] = pd.to_datetime(df["Data"])
+        sort_y = alt.SortField(field="Cliente", order="ascending")
 
-        vista = st.selectbox(
-            "Vista Gantt",
-            ["Per commessa (Gruppo)", "Per commessa + materiale", "Per riga (ID ordine)"],
-            key="vista_gantt"
-        )
+    base = alt.Chart(agg).encode(
+        y=alt.Y("Commessa:N", sort=sort_y, title="Commesse"),
+        x=alt.X("inizio:T", title="Giorni"),
+        x2="fine:T",
+        tooltip=[
+            alt.Tooltip("Data:T", title="Giorno"),
+            alt.Tooltip("Commessa:N", title="Commessa"),
+            alt.Tooltip("strutture:Q", title="Strutture prodotte"),
+            alt.Tooltip("minuti:Q", title="Minuti prodotti"),
+        ],
+    )
 
-        if vista == "Per commessa (Gruppo)":
-            # una barra per gruppo (ordine completo)
-            g = (
-                df.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
-                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
-            )
-            # fine inclusiva -> aggiungo 1 giorno per chiudere la barra correttamente
-            g["fine"] = g["fine"] + pd.Timedelta(days=1)
+    # rettangoli giorno-per-giorno
+    bars = base.mark_bar(cornerRadius=6).encode(
+        color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
+    )
 
-            chart = (
-                alt.Chart(g)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Gruppo:N", sort="-x", title="Commessa (Gruppo)"),
-                    x=alt.X("inizio:T", title="Data"),
-                    x2="fine:T",
-                    color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente")),
-                    tooltip=[
-                        "Gruppo:N",
-                        "Cliente:N",
-                        "Prodotto:N",
-                        alt.Tooltip("inizio:T", title="Inizio"),
-                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
-                    ],
-                )
-                .properties(height=max(200, 40 * len(g)))
-                .interactive()
-            )
+    # testo dentro i rettangoli
+    text = alt.Chart(agg).mark_text(
+        align="left",
+        baseline="middle",
+        dx=6,  # sposta testo a destra
+        fontSize=12
+    ).encode(
+        y=alt.Y("Commessa:N", sort=sort_y),
+        x=alt.X("inizio:T"),
+        text="label:N"
+    )
 
-            st.altair_chart(chart, use_container_width=True)
+    chart = (bars + text).properties(
+        height=max(300, 45 * len(agg["Commessa"].unique())),
+    ).interactive()
 
-        elif vista == "Per commessa + materiale":
-            # barre separate per PVC / Alluminio dentro ogni gruppo
-            g = (
-                df.groupby(["Gruppo", "Cliente", "Prodotto", "Materiale"], as_index=False)
-                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
-            )
-            g["fine"] = g["fine"] + pd.Timedelta(days=1)
+    st.altair_chart(chart, use_container_width=True)
 
-            chart = (
-                alt.Chart(g)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Gruppo:N", sort="-x", title="Commessa (Gruppo)"),
-                    x=alt.X("inizio:T", title="Data"),
-                    x2="fine:T",
-                    color=alt.Color("Materiale:N", legend=alt.Legend(title="Materiale")),
-                    tooltip=[
-                        "Gruppo:N",
-                        "Cliente:N",
-                        "Prodotto:N",
-                        "Materiale:N",
-                        alt.Tooltip("inizio:T", title="Inizio"),
-                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
-                    ],
-                )
-                .properties(height=max(200, 40 * len(g["Gruppo"].unique())))
-                .interactive()
-            )
-
-            st.altair_chart(chart, use_container_width=True)
-
-        else:  # "Per riga (ID ordine)"
-            g = (
-                df.groupby(["Ordine", "Gruppo", "Cliente", "Prodotto", "Materiale", "Tipologia"], as_index=False)
-                  .agg(inizio=("Data", "min"), fine=("Data", "max"))
-            )
-            g["fine"] = g["fine"] + pd.Timedelta(days=1)
-
-            chart = (
-                alt.Chart(g)
-                .mark_bar()
-                .encode(
-                    y=alt.Y("Ordine:N", sort="-x", title="Riga (ID)"),
-                    x=alt.X("inizio:T", title="Data"),
-                    x2="fine:T",
-                    color=alt.Color("Materiale:N", legend=alt.Legend(title="Materiale")),
-                    tooltip=[
-                        "Ordine:N",
-                        "Gruppo:N",
-                        "Cliente:N",
-                        "Prodotto:N",
-                        "Materiale:N",
-                        "Tipologia:N",
-                        alt.Tooltip("inizio:T", title="Inizio"),
-                        alt.Tooltip("fine:T", title="Fine (esclusiva)"),
-                    ],
-                )
-                .properties(height=max(250, 25 * len(g)))
-                .interactive()
-            )
-
-            st.altair_chart(chart, use_container_width=True)
 
