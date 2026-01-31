@@ -84,56 +84,73 @@ def calcola_piano(dati):
         return [], []
 
     oggi = date.today()
-    giorno = oggi
 
-    # minuti usati nel giorno corrente per materiale
-    pvc_usati = 0
-    all_usati = 0
+    # Stato separato per ogni materiale (minuti/giorno)
+    stato = {
+        "PVC": {
+            "giorno": oggi,
+            "usati": 0,
+            "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]
+        },
+        "Alluminio": {
+            "giorno": oggi,
+            "usati": 0,
+            "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]
+        }
+    }
 
     piano = []
     consegne = []
 
     for o in ordini:
         materiale = o.get("materiale", "PVC")
-        tempo_ordine = int(o.get("tempo_minuti", 0))
+        if materiale not in stato:
+            materiale = "PVC"
 
-        # se per qualche motivo manca tempo_minuti, non possiamo pianificare bene
-        # ma per non rompere, lo trattiamo come 0 (ordine "istantaneo")
-        if tempo_ordine < 0:
-            tempo_ordine = 0
+        tempo_totale = int(o.get("tempo_minuti", 0))
+        if tempo_totale < 0:
+            tempo_totale = 0
 
-        while True:
-            if materiale == "PVC":
-                cap = CAPACITA_MINUTI_GIORNALIERA["PVC"]
-                if pvc_usati + tempo_ordine <= cap:
-                    pvc_usati += tempo_ordine
-                    residuo = cap - pvc_usati
-                    break
-            else:  # Alluminio
-                cap = CAPACITA_MINUTI_GIORNALIERA["Alluminio"]
-                if all_usati + tempo_ordine <= cap:
-                    all_usati += tempo_ordine
-                    residuo = cap - all_usati
-                    break
+        remaining = tempo_totale
 
-            # non ci sta nel giorno corrente -> giorno dopo, reset contatori giornalieri
-            giorno = giorno + timedelta(days=1)
-            pvc_usati = 0
-            all_usati = 0
+        giorno = stato[materiale]["giorno"]
+        usati = stato[materiale]["usati"]
+        cap = stato[materiale]["cap"]
 
-        piano.append({
-            "Data": str(giorno),
-            "Ordine": o.get("id", ""),
-            "Cliente": o.get("cliente", ""),
-            "Prodotto": o.get("prodotto", ""),
-            "Materiale": materiale,
-            "Tipologia": o.get("tipologia", ""),
-            "Vetri": o.get("num_vetri", ""),
-            "Tempo_minuti": tempo_ordine,
-            "Minuti_residui_materiale": residuo
-        })
+        # Se un ordine è più grande della capacità giornaliera, lo spezzettiamo su più giorni
+        while remaining > 0:
+            disponibili = cap - usati
 
+            # Se oggi non ho più minuti disponibili, passo al giorno dopo e resetto
+            if disponibili <= 0:
+                giorno = giorno + timedelta(days=1)
+                usati = 0
+                continue
+
+            prodotti_oggi = min(disponibili, remaining)
+            usati += prodotti_oggi
+            remaining -= prodotti_oggi
+
+            piano.append({
+                "Data": str(giorno),
+                "Ordine": o.get("id", ""),
+                "Cliente": o.get("cliente", ""),
+                "Prodotto": o.get("prodotto", ""),
+                "Materiale": materiale,
+                "Tipologia": o.get("tipologia", ""),
+                "Vetri": o.get("num_vetri", ""),
+                "Tempo_minuti_prodotti": prodotti_oggi,
+                "Minuti_residui_materiale": cap - usati
+            })
+
+            # Se l'ordine non è finito e ho riempito la giornata, continuo domani
+            if remaining > 0 and usati >= cap:
+                giorno = giorno + timedelta(days=1)
+                usati = 0
+
+        # consegna stimata = giorno in cui termina l'ultima parte dell'ordine
         o["consegna_stimata"] = str(giorno)
+
         consegne.append({
             "Ordine": o.get("id", ""),
             "Cliente": o.get("cliente", ""),
@@ -141,13 +158,18 @@ def calcola_piano(dati):
             "Materiale": materiale,
             "Tipologia": o.get("tipologia", ""),
             "Vetri": o.get("num_vetri", ""),
-            "Tempo_minuti": tempo_ordine,
+            "Tempo_minuti": tempo_totale,
             "Richiesta": o.get("data_richiesta", ""),
             "Stimata": str(giorno)
         })
 
+        # Salvo lo stato aggiornato per il materiale
+        stato[materiale]["giorno"] = giorno
+        stato[materiale]["usati"] = usati
+
     salva_dati(dati)
     return consegne, piano
+
 
 
 # =========================
@@ -247,5 +269,4 @@ if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno")
     st.dataframe(st.session_state["piano"], use_container_width=True)
     st.caption("La pianificazione rispetta le capacità giornaliere in minuti per materiale: PVC 4500, Alluminio 3000.")
-
 
