@@ -5,6 +5,15 @@ import os
 import hashlib
 import pandas as pd
 import altair as alt
+def prossimo_giorno_lavorativo(d):
+    # 0=lun,1=mar,2=mer,3=gio,4=ven,5=sab,6=dom
+    while d.weekday() >= 5:
+        d = d + timedelta(days=1)
+    return d
+
+def aggiungi_giorno_lavorativo(d):
+    d = d + timedelta(days=1)
+    return prossimo_giorno_lavorativo(d)
 
 FILE_DATI = "dati_produzione.json"
 
@@ -108,6 +117,7 @@ def calcola_piano(dati):
     ordini = dati.get("ordini", [])
     if not ordini:
         return [], []
+    oggi = prossimo_giorno_lavorativo(oggi)
 
     oggi = date.today()
 
@@ -168,7 +178,7 @@ def calcola_piano(dati):
         while remaining > 0:
             disponibili = cap - usati
             if disponibili <= 0:
-                giorno = giorno + timedelta(days=1)
+                giorno = aggiungi_giorno_lavorativo(giorno)
                 usati = 0
                 continue
 
@@ -197,7 +207,8 @@ def calcola_piano(dati):
             })
 
             if remaining > 0 and usati >= cap:
-                giorno = giorno + timedelta(days=1)
+                giorno = aggiungi_giorno_lavorativo(giorno)
+
                 usati = 0
 
         # fine riga
