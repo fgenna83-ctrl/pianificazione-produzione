@@ -7,6 +7,7 @@ import pandas as pd
 import altair as alt
 import streamlit.components.v1 as components
 from pathlib import Path
+import streamlit.components.v1 as components
 
 
 FILE_DATI = "dati_produzione.json"
@@ -24,25 +25,23 @@ MINUTI_8_ORE = 8 * 60  # 480
 # COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
 # =========================
 def _find_gantt_component_dir():
-    # 1) stessa cartella di app.py
     try:
         p = Path(__file__).resolve().parent / "gantt_dnd"
-        if p.exists() and p.is_dir():
+        if (p / "index.html").exists():
             return p
     except Exception:
         pass
 
-    # 2) working directory (alcuni deploy)
     p = Path.cwd() / "gantt_dnd"
-    if p.exists() and p.is_dir():
+    if (p / "index.html").exists():
         return p
 
     return None
 
+_GANTT_DIR = _find_gantt_component_dir()
 
-_gantt_dir = _find_gantt_component_dir()
-if _gantt_dir is not None:
-    gantt_dnd = components.declare_component("gantt_dnd", path=str(_gantt_dir))
+if _GANTT_DIR is not None:
+    gantt_dnd = components.declare_component("gantt_dnd", path=str(_GANTT_DIR))
 else:
     gantt_dnd = None
 
@@ -684,26 +683,35 @@ if "piano" in st.session_state:
                     "start": r["start"].strftime("%Y-%m-%d"),
                     "end": r["end"].strftime("%Y-%m-%d"),
                 })
+            res = gantt_dnd(
+            tasks=tasks,
+            key="gantt_dnd",
+            default=None
+        )
+
+            st.write("DEBUG res:", res)
+
 
             # Il componente deve ritornare: {"gruppo":"X","nuova_data_inizio":"YYYY-MM-DD"}
             res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
 
             if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
-                gruppo_drag = str(res["gruppo"])
-                nuova_data = str(res["nuova_data_inizio"])
+             gruppo_drag = str(res["gruppo"])
+            nuova_data = str(res["nuova_data_inizio"])
 
-                for o in dati.get("ordini", []):
-                    if str(o.get("ordine_gruppo")) == gruppo_drag:
-                        o["data_inizio_gruppo"] = nuova_data
+            for o in dati.get("ordini", []):
+                if str(o.get("ordine_gruppo")) == gruppo_drag:
+                    o["data_inizio_gruppo"] = nuova_data
 
-                salva_dati(dati)
+            salva_dati(dati)
 
-                consegne, piano = calcola_piano(dati)
-                st.session_state["consegne"] = consegne
-                st.session_state["piano"] = piano
+            consegne, piano = calcola_piano(dati)
+            st.session_state["consegne"] = consegne
+            st.session_state["piano"] = piano
 
-                st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data} (ricalcolato ✅)")
-                st.rerun()
+            st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data}")
+            st.rerun()
+
         else:
             st.info("Nessun dato per il Drag & Drop.")
 
@@ -835,6 +843,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
