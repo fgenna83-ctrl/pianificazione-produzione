@@ -479,28 +479,31 @@ if "consegne" in st.session_state:
               )
         )
 
-        giorni_ordinati = (
-            df[["Giorno", "Data"]]
-            .drop_duplicates()
-            .sort_values("Data")["Giorno"]
-            .tolist()
-        )
+        # ✅ Costruisco tutti i giorni lavorativi tra min e max (anche se non ci sono dati)
+min_d = df["Data"].min().normalize()
+max_d = df["Data"].max().normalize()
 
-        agg["label_base"] = (
+# Business days = lun-ven
+all_days = pd.date_range(start=min_d, end=max_d, freq="B")
+
+giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
+
+
+agg["label_base"] = (
             "G" + agg["Gruppo"].astype(str)
             + " | " + agg["Cliente"].astype(str)
             + " | " + agg["Prodotto"].astype(str)
         )
 
-        colA, colB, colC = st.columns([1, 1, 2])
-        with colA:
+colA, colB, colC = st.columns([1, 1, 2])
+with colA:
             show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
-        with colB:
+with colB:
             ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
-        with colC:
+with colC:
             st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
 
-        if show_minutes:
+if show_minutes:
             agg["label"] = (
                 agg["label_base"]
                 + "\n"
@@ -509,15 +512,15 @@ if "consegne" in st.session_state:
                 + agg["minuti"].astype(int).astype(str)
                 + " min"
             )
-        else:
+else:
             agg["label"] = agg["label_base"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
 
-        if ordina == "Per Gruppo":
+if ordina == "Per Gruppo":
             sort_y = alt.SortField(field="Gruppo", order="ascending")
-        else:
+else:
             sort_y = alt.SortField(field="Cliente", order="ascending")
 
-        base = alt.Chart(agg).encode(
+base = alt.Chart(agg).encode(
             y=alt.Y(
                 "Commessa:N",
                 sort=sort_y,
@@ -539,11 +542,11 @@ if "consegne" in st.session_state:
             ],
         )
 
-        bars = base.mark_bar(cornerRadius=10).encode(
+bars = base.mark_bar(cornerRadius=10).encode(
             color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
         )
 
-        text = alt.Chart(agg).mark_text(
+text = alt.Chart(agg).mark_text(
             align="center",
             baseline="middle",
             fontSize=13,
@@ -554,11 +557,12 @@ if "consegne" in st.session_state:
             text="label:N"
         )
 
-        chart = (bars + text).properties(
+chart = (bars + text).properties(
             height=max(380, 70 * len(agg["Commessa"].unique())),
         )
 
-        st.altair_chart(chart, use_container_width=True)
+st.altair_chart(chart, use_container_width=True)
+
 
 
 
