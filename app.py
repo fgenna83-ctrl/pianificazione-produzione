@@ -451,8 +451,8 @@ if "consegne" in st.session_state:
         st.rerun()
 
 
-    # =========================
-    # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE)
+       # =========================
+    # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE) + GIORNI CONTINUI
     # =========================
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
@@ -460,17 +460,21 @@ if "consegne" in st.session_state:
     if df.empty:
         st.info("Nessun dato per il Gantt.")
     else:
+        # Date e filtro lun-ven
         df["Data"] = pd.to_datetime(df["Data"])
         df = df[df["Data"].dt.weekday < 5].copy()
 
+        # Giorno in formato dd/mm (categoria)
         df["Giorno"] = df["Data"].dt.strftime("%d/%m")
 
+        # Etichetta commessa
         df["Commessa"] = (
             "Gruppo " + df["Gruppo"].astype(str)
             + " | " + df["Cliente"].astype(str)
             + " | " + df["Prodotto"].astype(str)
         )
 
+        # Aggrego per giorno + commessa
         agg = (
             df.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
               .agg(
@@ -479,31 +483,29 @@ if "consegne" in st.session_state:
               )
         )
 
-        # ✅ Costruisco tutti i giorni lavorativi tra min e max (anche se non ci sono dati)
-min_d = df["Data"].min().normalize()
-max_d = df["Data"].max().normalize()
+        # ✅ Giorni CONTINUI (lun-ven) tra min e max, anche se non ci sono dati
+        min_d = df["Data"].min().normalize()
+        max_d = df["Data"].max().normalize()
 
-# Business days = lun-ven
-all_days = pd.date_range(start=min_d, end=max_d, freq="B")
+        all_days = pd.date_range(start=min_d, end=max_d, freq="B")  # B = business days (lun-ven)
+        giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
 
-giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
-
-
-agg["label_base"] = (
+        # Label base
+        agg["label_base"] = (
             "G" + agg["Gruppo"].astype(str)
             + " | " + agg["Cliente"].astype(str)
             + " | " + agg["Prodotto"].astype(str)
         )
 
-colA, colB, colC = st.columns([1, 1, 2])
-with colA:
+        colA, colB, colC = st.columns([1, 1, 2])
+        with colA:
             show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
-with colB:
+        with colB:
             ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
-with colC:
+        with colC:
             st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
 
-if show_minutes:
+        if show_minutes:
             agg["label"] = (
                 agg["label_base"]
                 + "\n"
@@ -512,27 +514,33 @@ if show_minutes:
                 + agg["minuti"].astype(int).astype(str)
                 + " min"
             )
-else:
-            agg["label"] = agg["label_base"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
+        else:
+            agg["label"] = (
+                agg["label_base"]
+                + "\n"
+                + agg["strutture"].round(1).astype(str)
+                + " strutt."
+            )
 
-if ordina == "Per Gruppo":
+        # Ordinamento asse Y
+        if ordina == "Per Gruppo":
             sort_y = alt.SortField(field="Gruppo", order="ascending")
-else:
+        else:
             sort_y = alt.SortField(field="Cliente", order="ascending")
 
-base = alt.Chart(agg).encode(
+        base = alt.Chart(agg).encode(
             y=alt.Y(
                 "Commessa:N",
                 sort=sort_y,
                 title="Commesse",
                 axis=alt.Axis(labelFontSize=12, labelLimit=500, titleFontSize=13),
-                scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15)
+                scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15),
             ),
             x=alt.X(
                 "Giorno:N",
                 sort=giorni_ordinati,
                 title="Giorni (solo lavorativi)",
-                axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13)
+                axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13),
             ),
             tooltip=[
                 alt.Tooltip("Giorno:N", title="Giorno"),
@@ -542,26 +550,29 @@ base = alt.Chart(agg).encode(
             ],
         )
 
-bars = base.mark_bar(cornerRadius=10).encode(
+        # Rettangoli
+        bars = base.mark_bar(cornerRadius=10).encode(
             color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
         )
 
-text = alt.Chart(agg).mark_text(
+        # Testo nel box
+        text = alt.Chart(agg).mark_text(
             align="center",
             baseline="middle",
             fontSize=13,
-            lineBreak="\n"
+            lineBreak="\n",
         ).encode(
             y=alt.Y("Commessa:N", sort=sort_y),
             x=alt.X("Giorno:N", sort=giorni_ordinati),
-            text="label:N"
+            text="label:N",
         )
 
-chart = (bars + text).properties(
+        chart = (bars + text).properties(
             height=max(380, 70 * len(agg["Commessa"].unique())),
         )
 
-st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
+
 
 
 
