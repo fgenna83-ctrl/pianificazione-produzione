@@ -1,0 +1,51 @@
+<link rel="stylesheet" href="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.css">
+<script src="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+
+<div id="gantt" style="width:100%; overflow-x:auto; border:1px solid #eee; border-radius:10px; padding:10px;"></div>
+
+<script>
+  // Streamlit component API (v1)
+  function sendValue(value) {
+    const msg = {
+      isStreamlitMessage: true,
+      type: "streamlit:setComponentValue",
+      value: value,
+    };
+    window.parent.postMessage(msg, "*");
+  }
+
+  function nextWorkday(d) {
+    // dom=0 sab=6
+    while (d.getDay() === 0 || d.getDay() === 6) {
+      d.setDate(d.getDate() + 1);
+    }
+    return d;
+  }
+
+  function fmt(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${dd}`;
+  }
+
+  // tasks arrivano da Streamlit nel global scope
+  const tasks = window.__TASKS__ || [];
+
+  const gantt = new Gantt("#gantt", tasks, {
+    view_mode: "Day",
+    language: "it",
+    date_format: "YYYY-MM-DD",
+
+    // quando trascini una barra
+    on_date_change: function(task, start, end) {
+      let s = new Date(start);
+      s = nextWorkday(s);
+
+      sendValue({
+        gruppo: String(task.id),
+        nuova_data_inizio: fmt(s)
+      });
+    }
+  });
+</script>
