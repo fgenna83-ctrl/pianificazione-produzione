@@ -1,51 +1,84 @@
-<link rel="stylesheet" href="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.css">
-<script src="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.css">
+  <script src="https://unpkg.com/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
 
-<div id="gantt" style="width:100%; overflow-x:auto; border:1px solid #eee; border-radius:10px; padding:10px;"></div>
+  <!-- Streamlit Component Lib (necessaria!) -->
+  <script src="https://unpkg.com/streamlit-component-lib@1.4.0/dist/index.js"></script>
 
-<script>
-  // Streamlit component API (v1)
-  function sendValue(value) {
-    const msg = {
-      isStreamlitMessage: true,
-      type: "streamlit:setComponentValue",
-      value: value,
-    };
-    window.parent.postMessage(msg, "*");
-  }
+  <style>
+    body { margin: 0; padding: 0; font-family: sans-serif; }
+    #wrap { padding: 10px; }
+    #gantt { width: 100%; overflow-x: auto; border: 1px solid #eee; border-radius: 10px; padding: 10px; }
+  </style>
+</head>
 
-  function nextWorkday(d) {
-    // dom=0 sab=6
-    while (d.getDay() === 0 || d.getDay() === 6) {
-      d.setDate(d.getDate() + 1);
+<body>
+  <div id="wrap">
+    <div id="gantt"></div>
+  </div>
+
+  <script>
+    const { Streamlit } = window.streamlitComponentLib;
+
+    function nextWorkday(d) {
+      while (d.getDay() === 0 || d.getDay() === 6) { // dom=0 sab=6
+        d.setDate(d.getDate() + 1);
+      }
+      return d;
     }
-    return d;
-  }
 
-  function fmt(d) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${dd}`;
-  }
+    function fmt(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    }
 
-  // tasks arrivano da Streamlit nel global scope
-  const tasks = window.__TASKS__ || [];
+    let gantt = null;
 
-  const gantt = new Gantt("#gantt", tasks, {
-    view_mode: "Day",
-    language: "it",
-    date_format: "YYYY-MM-DD",
+    function render(tasks) {
+      const el = document.getElementById("gantt");
+      el.innerHTML = "";
 
-    // quando trascini una barra
-    on_date_change: function(task, start, end) {
-      let s = new Date(start);
-      s = nextWorkday(s);
+      if (!tasks || tasks.length === 0) {
+        el.innerHTML = "<div style='padding:8px'>Nessuna task da mostrare.</div>";
+        Streamlit.setFrameHeight(120);
+        return;
+      }
 
-      sendValue({
-        gruppo: String(task.id),
-        nuova_data_inizio: fmt(s)
+      gantt = new Gantt("#gantt", tasks, {
+        view_mode: "Day",
+        language: "it",
+        date_format: "YYYY-MM-DD",
+        on_date_change: function(task, start, end) {
+          let s = new Date(start);
+          s = nextWorkday(s);
+
+          // manda il valore a Python
+          Streamlit.setComponentValue({
+            gruppo: String(task.id),
+            nuova_data_inizio: fmt(s)
+          });
+        }
       });
+
+      // altezza iframe
+      Streamlit.setFrameHeight(520);
     }
-  });
-</script>
+
+    // Streamlit ti manda i dati qui
+    Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, (event) => {
+      const data = event.detail;
+      const tasks = (data && data.args && data.args.tasks) ? data.args.tasks : [];
+      render(tasks);
+    });
+
+    Streamlit.setComponentReady();
+    Streamlit.setFrameHeight(520);
+  </script>
+</body>
+</html>
+
