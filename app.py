@@ -24,24 +24,13 @@ MINUTI_8_ORE = 8 * 60  # 480
 # =========================
 # COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
 # =========================
-def _find_gantt_component_dir():
-    try:
-        p = Path(__file__).resolve().parent / "gantt_dnd"
-        if (p / "index.html").exists():
-            return p
-    except Exception:
-        pass
+# =========================
+# COMPONENTE (GANTT DRAG&DROP)
+# =========================
+_COMPONENT_DIR = Path(__file__).resolve().parent / "gantt_dnd"
 
-    p = Path.cwd() / "gantt_dnd"
-    if (p / "index.html").exists():
-        return p
-
-    return None
-
-_GANTT_DIR = _find_gantt_component_dir()
-
-if _GANTT_DIR is not None:
-    gantt_dnd = components.declare_component("gantt_dnd", path=str(_GANTT_DIR))
+if _COMPONENT_DIR.exists() and (_COMPONENT_DIR / "index.html").exists():
+    gantt_dnd = components.declare_component("gantt_dnd", path=str(_COMPONENT_DIR))
 else:
     gantt_dnd = None
 
@@ -844,6 +833,7 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
