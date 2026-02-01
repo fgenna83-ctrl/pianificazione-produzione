@@ -652,14 +652,21 @@ if "piano" in st.session_state:
         st.warning("⚠️ Componente drag&drop non trovato (cartella 'gantt_dnd' mancante). Uso il Gantt classico sotto.")
     else:
         df_drag = pd.DataFrame(st.session_state.get("piano", []))
-        if not df_drag.empty:
-            df_drag["Data"] = pd.to_datetime(df_drag["Data"])
-            df_drag = df_drag[df_drag["Data"].dt.weekday < 5]
 
+        if df_drag.empty:
+            st.info("Nessun dato per il Drag & Drop.")
+        else:
+            # Solo giorni lavorativi
+            df_drag["Data"] = pd.to_datetime(df_drag["Data"])
+            df_drag = df_drag[df_drag["Data"].dt.weekday < 5].copy()
+
+            # Raggruppo per commessa (Gruppo/Cliente/Prodotto) per creare una task unica
             g = (
                 df_drag.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
-                       .agg(start=("Data", "min"), end=("Data", "max"))
+                      .agg(start=("Data", "min"), end=("Data", "max"))
             )
+
+            # Frappe-Gantt vuole end esclusivo: aggiungo 1 giorno
             g["end"] = g["end"] + pd.Timedelta(days=1)
 
             tasks = []
@@ -672,38 +679,35 @@ if "piano" in st.session_state:
                     "start": r["start"].strftime("%Y-%m-%d"),
                     "end": r["end"].strftime("%Y-%m-%d"),
                 })
-            res = gantt_dnd(
-            tasks=tasks,
-            key="gantt_dnd",
-            default=None
-        )
 
+            # ✅ UNA SOLA chiamata al componente (altrimenti duplicate key!)
+            res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
+
+            # Debug (puoi lasciarlo per capire se ritorna qualcosa)
             st.write("DEBUG res:", res)
-
 
             # Il componente deve ritornare: {"gruppo":"X","nuova_data_inizio":"YYYY-MM-DD"}
-            res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
-            st.write("DEBUG res:", res)
-
             if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
-             gruppo_drag = str(res["gruppo"])
-            nuova_data = str(res["nuova_data_inizio"])
+                gruppo_drag = str(res["gruppo"])
+                nuova_data = str(res["nuova_data_inizio"])
 
-            for o in dati.get("ordini", []):
-                if str(o.get("ordine_gruppo")) == gruppo_drag:
-                    o["data_inizio_gruppo"] = nuova_data
+                # aggiorno data_inizio_gruppo per TUTTE le righe del gruppo
+                for o in dati.get("ordini", []):
+                    if str(o.get("ordine_gruppo")) == gruppo_drag:
+                        o["data_inizio_gruppo"] = nuova_data
 
-            salva_dati(dati)
+                salva_dati(dati)
 
-            consegne, piano = calcola_piano(dati)
-            st.session_state["consegne"] = consegne
-            st.session_state["piano"] = piano
+                # ricalcolo piano e consegne
+                consegne, piano = calcola_piano(dati)
+                st.session_state["consegne"] = consegne
+                st.session_state["piano"] = piano
 
-            st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data}")
-            st.rerun()
+                st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data}")
+                st.rerun()
 
-        else:
-            st.info("Nessun dato per il Drag & Drop.")
+            else:
+               st.info("Nessun dato per il Drag & Drop.")
 
     # -----------------------------
     # GANTT CLASSICO (Altair) - sempre disponibile
@@ -833,6 +837,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
