@@ -7,7 +7,7 @@ import pandas as pd
 import altair as alt
 import streamlit.components.v1 as components
 from pathlib import Path
-import streamlit.components.v1 as components
+
 
 
 FILE_DATI = "dati_produzione.json"
@@ -694,6 +694,7 @@ if "piano" in st.session_state:
 
             # Il componente deve ritornare: {"gruppo":"X","nuova_data_inizio":"YYYY-MM-DD"}
             res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
+            st.write("DEBUG res:", res)
 
             if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
              gruppo_drag = str(res["gruppo"])
@@ -843,6 +844,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
