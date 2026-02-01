@@ -428,57 +428,28 @@ if "piano" in st.session_state:
     # =========================
     # DRAG & DROP
     # =========================
-    st.subheader("🟦 Gantt Drag & Drop (sperimentale)")
+    st.subheader("📦 Sposta inizio produzione commessa")
 
-    if gantt_dnd is None:
-        st.warning("⚠️ Componente drag&drop non trovato: manca la cartella 'gantt_dnd' con 'index.html'.")
-    else:
-        df_drag = pd.DataFrame(st.session_state.get("piano", []))
+if "consegne" in st.session_state:
+    gruppi = sorted({str(o["Gruppo"]) for o in st.session_state["consegne"]})
 
-        if df_drag.empty:
-            st.info("Nessun dato per il Drag & Drop. (Premi prima '📅 Calcola piano')")
-        else:
-            df_drag["Data"] = pd.to_datetime(df_drag["Data"])
-            df_drag = df_drag[df_drag["Data"].dt.weekday < 5].copy()
+    g_sel = st.selectbox("Seleziona gruppo", gruppi)
+    nuova_data = st.date_input("Nuova data inizio produzione")
 
-            g = (
-                df_drag.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
-                       .agg(start=("Data", "min"), end=("Data", "max"))
-            )
-            g["end"] = g["end"] + pd.Timedelta(days=1)
+    if st.button("📌 Applica spostamento"):
+        for o in dati["ordini"]:
+            if str(o.get("ordine_gruppo")) == g_sel:
+                o["data_inizio_gruppo"] = str(nuova_data)
 
-            tasks = []
-            for _, r in g.iterrows():
-                gruppo = str(r["Gruppo"])
-                nome = f"G{gruppo} | {r['Cliente']} | {r['Prodotto']}"
-                tasks.append({
-                    "id": gruppo,
-                    "name": nome,
-                    "start": r["start"].strftime("%Y-%m-%d"),
-                    "end": r["end"].strftime("%Y-%m-%d"),
-                })
+        salva_dati(dati)
 
-            # CHIAMATA UNICA al componente (fondamentale)
-            res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
-            st.write("DEBUG res:", res)
+        consegne, piano = calcola_piano(dati)
+        st.session_state["consegne"] = consegne
+        st.session_state["piano"] = piano
 
-            # Se arriva un dict => aggiorno e ricalcolo
-            if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
-                gruppo_drag = str(res["gruppo"])
-                nuova_data = str(res["nuova_data_inizio"])
+        st.success(f"Gruppo {g_sel} spostato al {nuova_data}")
+        st.rerun()
 
-                for o in dati.get("ordini", []):
-                    if str(o.get("ordine_gruppo")) == gruppo_drag:
-                        o["data_inizio_gruppo"] = nuova_data
-
-                salva_dati(dati)
-
-                consegne, piano = calcola_piano(dati)
-                st.session_state["consegne"] = consegne
-                st.session_state["piano"] = piano
-
-                st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data} (ricalcolato ✅)")
-                st.rerun()
 
     # =========================
     # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE)
@@ -588,6 +559,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
