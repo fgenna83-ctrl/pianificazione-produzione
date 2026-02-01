@@ -8,8 +8,9 @@ import altair as alt
 import streamlit.components.v1 as components
 from pathlib import Path
 
-
-
+# =========================
+# FILE DATI
+# =========================
 FILE_DATI = "dati_produzione.json"
 
 # Capacità giornaliera fissa per materiale (minuti/giorno)
@@ -20,12 +21,9 @@ CAPACITA_MINUTI_GIORNALIERA = {
 
 MINUTI_8_ORE = 8 * 60  # 480
 
-
-# =========================
-# COMPONENT (GANTT DRAG&DROP) - SAFE (NON CRASHA SE MANCA CARTELLA)
-# =========================
 # =========================
 # COMPONENTE (GANTT DRAG&DROP)
+# Cartella: gantt_dnd/index.html
 # =========================
 _COMPONENT_DIR = Path(__file__).resolve().parent / "gantt_dnd"
 
@@ -34,27 +32,22 @@ if _COMPONENT_DIR.exists() and (_COMPONENT_DIR / "index.html").exists():
 else:
     gantt_dnd = None
 
-
 # =========================
 # GIORNI LAVORATIVI (LUN-VEN)
 # =========================
-def prossimo_giorno_lavorativo(d):
+def prossimo_giorno_lavorativo(d: date) -> date:
     while d.weekday() >= 5:  # 5=sabato, 6=domenica
         d = d + timedelta(days=1)
     return d
 
-
-def aggiungi_giorno_lavorativo(d):
-    d = d + timedelta(days=1)
-    return prossimo_giorno_lavorativo(d)
-
+def aggiungi_giorno_lavorativo(d: date) -> date:
+    return prossimo_giorno_lavorativo(d + timedelta(days=1))
 
 # =========================
 # LOGIN (Streamlit Secrets)
 # =========================
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-
 
 def check_login() -> bool:
     if "logged_in" not in st.session_state:
@@ -84,7 +77,6 @@ def check_login() -> bool:
 
     return False
 
-
 # =========================
 # STORAGE
 # =========================
@@ -94,14 +86,12 @@ def carica_dati():
             return json.load(f)
     return {"capacita_giornaliera": 0, "ordini": []}
 
-
 def salva_dati(dati):
     with open(FILE_DATI, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
 
-
 # =========================
-# TEMPI PRODUZIONE (vetri TOTALI per riga sui battenti)
+# TEMPI PRODUZIONE
 # =========================
 def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int) -> int:
     """
@@ -114,27 +104,21 @@ def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, vetri_to
     tipologia = tipologia.strip()
 
     if tipologia == "Battente":
-        tempo = int(vetri_totali) * 90
+        t = int(vetri_totali) * 90
         if materiale == "Alluminio":
-            tempo += int(quantita_strutture) * 30
-        return tempo
+            t += int(quantita_strutture) * 30
+        return t
 
-    # Scorrevole o Struttura speciale
     return int(quantita_strutture) * MINUTI_8_ORE
 
-
-def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int) -> tuple[int, int]:
-    """
-    Per mostrare anteprima in UI: (minuti_totali_riga, minuti_medi_per_struttura)
-    """
+def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int):
     tot = tempo_riga(materiale, tipologia, quantita_strutture, vetri_totali)
     if quantita_strutture > 0:
         return tot, int(round(tot / quantita_strutture))
     return tot, tot
 
-
 # =========================
-# PIANIFICAZIONE (spezzata su più giorni) - NO WEEKEND
+# PIANIFICAZIONE (NO WEEKEND)
 # =========================
 def calcola_piano(dati):
     ordini = dati.get("ordini", [])
@@ -149,16 +133,14 @@ def calcola_piano(dati):
         except Exception:
             return oggi
 
-    # Stato per materiale (minuti/giorno)
     stato = {
         "PVC": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]},
         "Alluminio": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]},
     }
 
     piano = []
-    consegna_per_gruppo = {}  # consegna unica per ordine (gruppo)
+    consegna_per_gruppo = {}
 
-    # --- Raggruppo righe per commessa (ordine_gruppo) ---
     gruppi_map = {}
     for o in ordini:
         g = o.get("ordine_gruppo", "0")
@@ -167,7 +149,6 @@ def calcola_piano(dati):
         g = str(g)
         gruppi_map.setdefault(g, []).append(o)
 
-    # ✅ Ordino per DATA INIZIO GRUPPO (non per data richiesta)
     def gruppo_sort_key(g):
         righe = gruppi_map[g]
         d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(oggi)))
@@ -180,7 +161,6 @@ def calcola_piano(dati):
 
     gruppi_ordinati = sorted(gruppi_map.keys(), key=gruppo_sort_key)
 
-    # Pianifica una singola riga sulla sua linea materiale, spezzandola su più giorni
     def pianifica_riga(o):
         materiale = o.get("materiale", "PVC")
         if materiale not in stato:
@@ -191,8 +171,7 @@ def calcola_piano(dati):
         usati = stato[materiale]["usati"]
 
         tempo_totale = int(o.get("tempo_minuti", 0) or 0)
-        if tempo_totale < 0:
-            tempo_totale = 0
+        tempo_totale = max(0, tempo_totale)
 
         remaining = tempo_totale
         qta_strutture = int(o.get("quantita_strutture", 0) or 0)
@@ -208,7 +187,6 @@ def calcola_piano(dati):
             usati += prodotti_oggi
             remaining -= prodotti_oggi
 
-            # strutture prodotte oggi (stima proporzionale ai minuti)
             strutture_oggi = 0.0
             if tempo_totale > 0 and qta_strutture > 0:
                 strutture_oggi = (prodotti_oggi / tempo_totale) * qta_strutture
@@ -228,56 +206,46 @@ def calcola_piano(dati):
                 "Strutture_prodotte": round(strutture_oggi, 2),
             })
 
-            # se non finito e ho esaurito la capacità -> domani (lavorativo)
             if remaining > 0 and usati >= cap:
                 giorno = aggiungi_giorno_lavorativo(giorno)
                 usati = 0
 
-        # fine riga
         o["consegna_stimata"] = str(giorno)
 
-        # aggiorno stato materiale
         stato[materiale]["giorno"] = giorno
         stato[materiale]["usati"] = usati
 
-        return giorno  # giorno di fine riga
+        return giorno
 
-    # --- Pianificazione COMMESSA per COMMESSA (sequenza globale) ---
     for g in gruppi_ordinati:
         righe = gruppi_map[g]
 
-        # ✅ Data inizio gruppo (vale per tutto il gruppo) + spingo le linee
         d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(oggi)))
         start_gruppo = prossimo_giorno_lavorativo(safe_date(d0))
+
         for mat in stato:
             if stato[mat]["giorno"] < start_gruppo:
                 stato[mat]["giorno"] = start_gruppo
                 stato[mat]["usati"] = 0
 
-        # Ordino le righe dentro la commessa
         righe.sort(key=lambda o: (o.get("materiale", "PVC"), int(o.get("id", 0) or 0)))
 
-        # Pianifico tutte le righe della commessa
         fine_righe = []
         for r in righe:
             fine_righe.append(pianifica_riga(r))
 
-        # Giorno fine commessa
         fine_commessa = max(fine_righe) if fine_righe else stato["PVC"]["giorno"]
-        fine_commessa = prossimo_giorno_lavorativo(fine_commessa)  # sicurezza
+        fine_commessa = prossimo_giorno_lavorativo(fine_commessa)
 
-        # Salvo consegna unica per commessa (gruppo)
         base = righe[0] if righe else {}
         consegna_per_gruppo[g] = {
             "Gruppo": g,
             "Cliente": base.get("cliente", ""),
             "Prodotto": base.get("prodotto", ""),
-            "Richiesta": "",
             "Tempo_totale_minuti": int(sum(int(r.get("tempo_minuti", 0) or 0) for r in righe)),
             "Stimata": str(fine_commessa),
         }
 
-        # porto tutte le linee almeno a fine_commessa
         for mat in stato:
             if stato[mat]["giorno"] < fine_commessa:
                 stato[mat]["giorno"] = fine_commessa
@@ -295,7 +263,6 @@ def calcola_piano(dati):
 
     consegne_ordini.sort(key=grp_key)
     return consegne_ordini, piano
-
 
 # =========================
 # APP
@@ -328,13 +295,11 @@ with col1:
 
 with col2:
     st.subheader("➕ Nuovo ordine (con righe)")
-
     cliente = st.text_input("Cliente")
     prodotto = st.text_input("Prodotto/commessa")
     data_richiesta = st.date_input("Data richiesta consegna", value=date.today())
 
     st.markdown("### Aggiungi riga ordine")
-
     materiale = st.selectbox("Materiale riga", ["PVC", "Alluminio"])
     tipologia = st.selectbox("Tipologia riga", ["Battente", "Scorrevole", "Struttura speciale"])
     quantita_strutture = st.number_input("Quantità strutture (riga)", min_value=1, value=1, step=1)
@@ -404,7 +369,7 @@ with col2:
                     "vetri_totali": r["vetri_totali"],
                     "tempo_minuti": int(r["tempo_minuti"]),
                     "data_richiesta": str(data_richiesta),
-                    "data_inizio_gruppo": str(data_richiesta),
+                    "data_inizio_gruppo": str(data_richiesta),  # guida la pianificazione e il drag
                     "inserito_il": str(date.today())
                 }
                 dati["ordini"].append(nuovo)
@@ -415,204 +380,18 @@ with col2:
 
 st.divider()
 
+# -----------------------------
+# LISTA ORDINI
+# -----------------------------
 st.subheader("📋 Ordini (righe)")
 if dati.get("ordini"):
     st.dataframe(dati["ordini"], use_container_width=True)
 else:
     st.info("Nessun ordine inserito.")
 
-st.markdown("## 🧹 Cancellazione")
-st.markdown("## ✏️ Modifica riga ordine")
-
-if dati.get("ordini"):
-    edit_map = {}
-    opzioni_edit = []
-    for o in dati["ordini"]:
-        rid = int(o.get("id", 0))
-        gruppo = o.get("ordine_gruppo", "")
-        cliente_lbl = o.get("cliente", "")
-        prodotto_lbl = o.get("prodotto", "")
-        materiale_lbl = o.get("materiale", "")
-        tipologia_lbl = o.get("tipologia", "")
-        minuti_lbl = o.get("tempo_minuti", "")
-        label = f"ID {rid} | Gruppo {gruppo} | {cliente_lbl} | {prodotto_lbl} | {materiale_lbl} | {tipologia_lbl} | {minuti_lbl} min"
-        opzioni_edit.append(label)
-        edit_map[label] = rid
-
-    scelta_edit = st.selectbox("Seleziona riga da modificare", opzioni_edit, key="sel_riga_edit")
-    id_edit = edit_map[scelta_edit]
-
-    riga = None
-    for o in dati["ordini"]:
-        if int(o.get("id", -1)) == id_edit:
-            riga = o
-            break
-
-    if riga is None:
-        st.error("Riga non trovata.")
-    else:
-        st.info(f"Stai modificando: ID {id_edit} (Gruppo {riga.get('ordine_gruppo')})")
-
-        colE1, colE2, colE3 = st.columns(3)
-
-        with colE1:
-            nuovo_cliente = st.text_input("Cliente", value=str(riga.get("cliente", "")), key=f"edit_cliente_{id_edit}")
-            nuovo_prodotto = st.text_input("Prodotto/commessa", value=str(riga.get("prodotto", "")), key=f"edit_prodotto_{id_edit}")
-
-        with colE2:
-            try:
-                dr = date.fromisoformat(str(riga.get("data_richiesta", str(date.today()))))
-            except Exception:
-                dr = date.today()
-            nuova_data_richiesta = st.date_input("Data richiesta consegna", value=dr, key=f"edit_data_{id_edit}")
-
-            try:
-                di = date.fromisoformat(str(riga.get("data_inizio_gruppo", str(dr))))
-            except Exception:
-                di = dr
-            nuova_data_inizio_gruppo = st.date_input("Data INIZIO produzione (Gruppo)", value=di, key=f"edit_datainizio_{id_edit}")
-
-            nuovo_materiale = st.selectbox(
-                "Materiale",
-                ["PVC", "Alluminio"],
-                index=0 if str(riga.get("materiale", "PVC")) == "PVC" else 1,
-                key=f"edit_materiale_{id_edit}"
-            )
-
-        with colE3:
-            tipologie = ["Battente", "Scorrevole", "Struttura speciale"]
-            cur_tip = str(riga.get("tipologia", "Battente"))
-            idx_tip = tipologie.index(cur_tip) if cur_tip in tipologie else 0
-
-            nuova_tipologia = st.selectbox(
-                "Tipologia",
-                tipologie,
-                index=idx_tip,
-                key=f"edit_tipologia_{id_edit}"
-            )
-
-            nuova_qta = st.number_input(
-                "Quantità strutture",
-                min_value=1,
-                value=int(riga.get("quantita_strutture", 1) or 1),
-                step=1,
-                key=f"edit_qta_{id_edit}"
-            )
-
-        if nuova_tipologia == "Battente":
-            nuova_vetri_totali = st.number_input(
-                "Vetri TOTALI (somma su tutte le strutture della riga)",
-                min_value=1,
-                value=int(riga.get("vetri_totali", 1) or 1),
-                step=1,
-                key=f"edit_vetri_{id_edit}"
-            )
-        else:
-            nuova_vetri_totali = 0
-
-        minuti_riga_new, minuti_medi_new = minuti_preview(
-            nuovo_materiale,
-            nuova_tipologia,
-            int(nuova_qta),
-            int(nuova_vetri_totali)
-        )
-        st.success(f"⏱️ Nuovo tempo riga: {minuti_riga_new} minuti (≈ {minuti_medi_new} min/struttura)")
-
-        colS1, colS2 = st.columns([1, 3])
-
-        with colS1:
-            if st.button("💾 Salva modifiche", key=f"btn_save_edit_{id_edit}"):
-                riga["cliente"] = nuovo_cliente
-                riga["prodotto"] = nuovo_prodotto
-                riga["data_richiesta"] = str(nuova_data_richiesta)
-                riga["materiale"] = nuovo_materiale
-                riga["tipologia"] = nuova_tipologia
-                riga["quantita_strutture"] = int(nuova_qta)
-                riga["vetri_totali"] = int(nuova_vetri_totali) if nuova_tipologia == "Battente" else ""
-                riga["tempo_minuti"] = int(minuti_riga_new)
-
-                g_sel = str(riga.get("ordine_gruppo"))
-                for o in dati["ordini"]:
-                    if str(o.get("ordine_gruppo")) == g_sel:
-                        o["data_inizio_gruppo"] = str(nuova_data_inizio_gruppo)
-
-                salva_dati(dati)
-
-                consegne, piano = calcola_piano(dati)
-                st.session_state["consegne"] = consegne
-                st.session_state["piano"] = piano
-
-                st.success("Riga modificata e piano ricalcolato ✅")
-                st.rerun()
-
-        with colS2:
-            st.caption("Nota: il tempo minuti viene ricalcolato automaticamente in base a materiale/tipologia/vetri.")
-else:
-    st.info("Nessuna riga presente da modificare.")
-
-col_del1, col_del2 = st.columns(2)
-
-with col_del1:
-    st.markdown("### 🗑️ Cancella singola riga")
-
-    if dati.get("ordini"):
-        righe_map = {}
-        opzioni = []
-        for o in dati["ordini"]:
-            rid = int(o.get("id", 0))
-            gruppo = o.get("ordine_gruppo", "")
-            materiale = o.get("materiale", "")
-            tipologia = o.get("tipologia", "")
-            minuti = o.get("tempo_minuti", "")
-            label = f"ID {rid} | Gruppo {gruppo} | {materiale} | {tipologia} | {minuti} min"
-            opzioni.append(label)
-            righe_map[label] = rid
-
-        scelta_riga = st.selectbox("Seleziona riga", opzioni, key="sel_riga_delete")
-
-        if st.button("❌ Elimina riga selezionata", key="btn_delete_riga"):
-            id_da_cancellare = righe_map[scelta_riga]
-            dati["ordini"] = [o for o in dati["ordini"] if int(o.get("id", -1)) != id_da_cancellare]
-
-            for i, o in enumerate(dati["ordini"], start=1):
-                o["id"] = i
-
-            salva_dati(dati)
-            st.session_state.pop("consegne", None)
-            st.session_state.pop("piano", None)
-            st.success(f"Eliminata riga ID {id_da_cancellare}")
-            st.rerun()
-    else:
-        st.info("Nessuna riga presente.")
-
-with col_del2:
-    st.markdown("### 🧨 Cancella ordine completo (Gruppo)")
-
-    if dati.get("ordini"):
-        gruppi = sorted({str(o.get("ordine_gruppo")) for o in dati["ordini"] if o.get("ordine_gruppo") is not None})
-
-        if gruppi:
-            gruppo_sel = st.selectbox("Seleziona Gruppo ordine", gruppi, key="sel_gruppo_delete")
-
-            righe_gruppo = [o for o in dati["ordini"] if str(o.get("ordine_gruppo")) == str(gruppo_sel)]
-            st.caption(f"Righe che verranno eliminate: {len(righe_gruppo)}")
-
-            if st.button("🔥 Elimina TUTTO l’ordine", key="btn_delete_gruppo"):
-                dati["ordini"] = [o for o in dati["ordini"] if str(o.get("ordine_gruppo")) != str(gruppo_sel)]
-
-                for i, o in enumerate(dati["ordini"], start=1):
-                    o["id"] = i
-
-                salva_dati(dati)
-                st.session_state.pop("consegne", None)
-                st.session_state.pop("piano", None)
-                st.success(f"Eliminato ordine (Gruppo {gruppo_sel})")
-                st.rerun()
-        else:
-            st.info("Nessun gruppo disponibile.")
-    else:
-        st.info("Nessun ordine presente.")
-
+# -----------------------------
+# BOTTONI PRINCIPALI
+# -----------------------------
 c1, c2, c3 = st.columns([1, 1, 2])
 
 with c1:
@@ -635,8 +414,11 @@ with c3:
         st.session_state.logged_in = False
         st.rerun()
 
+# -----------------------------
+# CONSEGNE + PIANO
+# -----------------------------
 if "consegne" in st.session_state:
-    st.subheader("✅ Consegne stimate (per riga)")
+    st.subheader("✅ Consegne stimate (per gruppo)")
     st.dataframe(st.session_state["consegne"], use_container_width=True)
 
 if "piano" in st.session_state:
@@ -644,29 +426,25 @@ if "piano" in st.session_state:
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
     # =========================
-    # GANTT DRAG & DROP (se componente presente)
+    # DRAG & DROP
     # =========================
     st.subheader("🟦 Gantt Drag & Drop (sperimentale)")
 
     if gantt_dnd is None:
-        st.warning("⚠️ Componente drag&drop non trovato (cartella 'gantt_dnd' mancante). Uso il Gantt classico sotto.")
+        st.warning("⚠️ Componente drag&drop non trovato: manca la cartella 'gantt_dnd' con 'index.html'.")
     else:
         df_drag = pd.DataFrame(st.session_state.get("piano", []))
 
         if df_drag.empty:
-            st.info("Nessun dato per il Drag & Drop.")
+            st.info("Nessun dato per il Drag & Drop. (Premi prima '📅 Calcola piano')")
         else:
-            # Solo giorni lavorativi
             df_drag["Data"] = pd.to_datetime(df_drag["Data"])
             df_drag = df_drag[df_drag["Data"].dt.weekday < 5].copy()
 
-            # Raggruppo per commessa (Gruppo/Cliente/Prodotto) per creare una task unica
             g = (
                 df_drag.groupby(["Gruppo", "Cliente", "Prodotto"], as_index=False)
-                      .agg(start=("Data", "min"), end=("Data", "max"))
+                       .agg(start=("Data", "min"), end=("Data", "max"))
             )
-
-            # Frappe-Gantt vuole end esclusivo: aggiungo 1 giorno
             g["end"] = g["end"] + pd.Timedelta(days=1)
 
             tasks = []
@@ -680,64 +458,48 @@ if "piano" in st.session_state:
                     "end": r["end"].strftime("%Y-%m-%d"),
                 })
 
-            # ✅ UNA SOLA chiamata al componente (altrimenti duplicate key!)
+            # CHIAMATA UNICA al componente (fondamentale)
             res = gantt_dnd(tasks=tasks, key="gantt_dnd", default=None)
-
-            # Debug (puoi lasciarlo per capire se ritorna qualcosa)
             st.write("DEBUG res:", res)
 
-            # Il componente deve ritornare: {"gruppo":"X","nuova_data_inizio":"YYYY-MM-DD"}
+            # Se arriva un dict => aggiorno e ricalcolo
             if isinstance(res, dict) and "gruppo" in res and "nuova_data_inizio" in res:
                 gruppo_drag = str(res["gruppo"])
                 nuova_data = str(res["nuova_data_inizio"])
 
-                # aggiorno data_inizio_gruppo per TUTTE le righe del gruppo
                 for o in dati.get("ordini", []):
                     if str(o.get("ordine_gruppo")) == gruppo_drag:
                         o["data_inizio_gruppo"] = nuova_data
 
                 salva_dati(dati)
 
-                # ricalcolo piano e consegne
                 consegne, piano = calcola_piano(dati)
                 st.session_state["consegne"] = consegne
                 st.session_state["piano"] = piano
 
-                st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data}")
+                st.success(f"📌 Spostato Gruppo {gruppo_drag} a inizio {nuova_data} (ricalcolato ✅)")
                 st.rerun()
 
-            else:
-               st.info("Nessun dato per il Drag & Drop.")
-
-    # -----------------------------
-    # GANTT CLASSICO (Altair) - sempre disponibile
-    # -----------------------------
-       # -----------------------------
-    # GANTT CLASSICO (Altair) - SOLO GIORNI LAVORATIVI (NO SAB/DOM) ANCHE SULL’ASSE
-    # -----------------------------
+    # =========================
+    # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE)
+    # =========================
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
     df = pd.DataFrame(st.session_state.get("piano", []))
     if df.empty:
         st.info("Nessun dato per il Gantt.")
     else:
-        # date
         df["Data"] = pd.to_datetime(df["Data"])
-
-        # ✅ Tieni solo lunedì-venerdì
         df = df[df["Data"].dt.weekday < 5].copy()
 
-        # ✅ Stringa giorno (categoria) così l’asse NON mostra sab/dom
         df["Giorno"] = df["Data"].dt.strftime("%d/%m")
 
-        # Nome commessa completo (asse Y)
         df["Commessa"] = (
             "Gruppo " + df["Gruppo"].astype(str)
             + " | " + df["Cliente"].astype(str)
             + " | " + df["Prodotto"].astype(str)
         )
 
-        # Aggrego per giorno + commessa (sommo strutture e minuti)
         agg = (
             df.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
               .agg(
@@ -746,7 +508,6 @@ if "piano" in st.session_state:
               )
         )
 
-        # Ordinamento asse X: in ordine cronologico reale
         giorni_ordinati = (
             df[["Giorno", "Data"]]
             .drop_duplicates()
@@ -754,7 +515,6 @@ if "piano" in st.session_state:
             .tolist()
         )
 
-        # Label base
         agg["label_base"] = (
             "G" + agg["Gruppo"].astype(str)
             + " | " + agg["Cliente"].astype(str)
@@ -774,25 +534,18 @@ if "piano" in st.session_state:
                 agg["label_base"]
                 + "\n"
                 + agg["strutture"].round(1).astype(str)
-                + " strutt.  |  "
+                + " strutt. | "
                 + agg["minuti"].astype(int).astype(str)
                 + " min"
             )
         else:
-            agg["label"] = (
-                agg["label_base"]
-                + "\n"
-                + agg["strutture"].round(1).astype(str)
-                + " strutt."
-            )
+            agg["label"] = agg["label_base"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
 
-        # Ordinamento asse Y
         if ordina == "Per Gruppo":
             sort_y = alt.SortField(field="Gruppo", order="ascending")
         else:
             sort_y = alt.SortField(field="Cliente", order="ascending")
 
-        # ✅ X = categoria (Giorno) così NON esistono sabato/domenica
         base = alt.Chart(agg).encode(
             y=alt.Y(
                 "Commessa:N",
@@ -815,12 +568,10 @@ if "piano" in st.session_state:
             ],
         )
 
-        # Rettangoli (tile)
         bars = base.mark_bar(cornerRadius=10).encode(
             color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
         )
 
-        # Testo centrato nel rettangolo
         text = alt.Chart(agg).mark_text(
             align="center",
             baseline="middle",
@@ -837,6 +588,7 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
