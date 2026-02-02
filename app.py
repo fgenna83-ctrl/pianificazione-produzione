@@ -5,6 +5,7 @@ import os
 import hashlib
 import pandas as pd
 import altair as alt
+import streamlit.components.v1 as components
 from pathlib import Path
 
 # =========================
@@ -15,11 +16,21 @@ FILE_DATI = "dati_produzione.json"
 # Capacità giornaliera fissa per materiale (minuti/giorno)
 CAPACITA_MINUTI_GIORNALIERA = {
     "PVC": 4500,
-    "Alluminio": 3000,
+    "Alluminio": 3000
 }
 
 MINUTI_8_ORE = 8 * 60  # 480
 
+# =========================
+# COMPONENTE (GANTT DRAG&DROP)
+# Cartella: gantt_dnd/index.html
+# =========================
+_COMPONENT_DIR = Path(__file__).resolve().parent / "gantt_dnd"
+
+if _COMPONENT_DIR.exists() and (_COMPONENT_DIR / "index.html").exists():
+    gantt_dnd = components.declare_component("gantt_dnd", path=str(_COMPONENT_DIR))
+else:
+    gantt_dnd = None
 
 # =========================
 # GIORNI LAVORATIVI (LUN-VEN)
@@ -29,17 +40,14 @@ def prossimo_giorno_lavorativo(d: date) -> date:
         d = d + timedelta(days=1)
     return d
 
-
 def aggiungi_giorno_lavorativo(d: date) -> date:
     return prossimo_giorno_lavorativo(d + timedelta(days=1))
-
 
 # =========================
 # LOGIN (Streamlit Secrets)
 # =========================
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-
 
 def check_login() -> bool:
     if "logged_in" not in st.session_state:
@@ -69,7 +77,6 @@ def check_login() -> bool:
 
     return False
 
-
 # =========================
 # STORAGE
 # =========================
@@ -79,11 +86,9 @@ def carica_dati():
             return json.load(f)
     return {"capacita_giornaliera": 0, "ordini": []}
 
-
 def salva_dati(dati):
     with open(FILE_DATI, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
-
 
 # =========================
 # TEMPI PRODUZIONE
@@ -106,13 +111,11 @@ def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, vetri_to
 
     return int(quantita_strutture) * MINUTI_8_ORE
 
-
 def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int):
     tot = tempo_riga(materiale, tipologia, quantita_strutture, vetri_totali)
     if quantita_strutture > 0:
         return tot, int(round(tot / quantita_strutture))
     return tot, tot
-
 
 # =========================
 # PIANIFICAZIONE (NO WEEKEND)
@@ -188,22 +191,20 @@ def calcola_piano(dati):
             if tempo_totale > 0 and qta_strutture > 0:
                 strutture_oggi = (prodotti_oggi / tempo_totale) * qta_strutture
 
-            piano.append(
-                {
-                    "Data": str(giorno),
-                    "Ordine": o.get("id", ""),
-                    "Gruppo": o.get("ordine_gruppo", ""),
-                    "Cliente": o.get("cliente", ""),
-                    "Prodotto": o.get("prodotto", ""),
-                    "Materiale": materiale,
-                    "Tipologia": o.get("tipologia", ""),
-                    "Qta_strutture": qta_strutture,
-                    "Vetri_totali": o.get("vetri_totali", ""),
-                    "Minuti_prodotti": int(prodotti_oggi),
-                    "Minuti_residui_materiale": int(cap - usati),
-                    "Strutture_prodotte": round(strutture_oggi, 2),
-                }
-            )
+            piano.append({
+                "Data": str(giorno),
+                "Ordine": o.get("id", ""),
+                "Gruppo": o.get("ordine_gruppo", ""),
+                "Cliente": o.get("cliente", ""),
+                "Prodotto": o.get("prodotto", ""),
+                "Materiale": materiale,
+                "Tipologia": o.get("tipologia", ""),
+                "Qta_strutture": qta_strutture,
+                "Vetri_totali": o.get("vetri_totali", ""),
+                "Minuti_prodotti": int(prodotti_oggi),
+                "Minuti_residui_materiale": int(cap - usati),
+                "Strutture_prodotte": round(strutture_oggi, 2),
+            })
 
             if remaining > 0 and usati >= cap:
                 giorno = aggiungi_giorno_lavorativo(giorno)
@@ -265,6 +266,79 @@ def calcola_piano(dati):
 
 
 # =========================
+# ✅ NUOVO: INSERIMENTO NON DISTRUTTIVO (non sposta gli ordini già inseriti)
+# =========================
+def _build_load_from_piano(piano: list[dict]) -> dict:
+    load = {"PVC": {}, "Alluminio": {}}
+    for r in piano:
+        mat = r.get("Materiale", "PVC")
+        d = str(r.get("Data"))
+        m = int(r.get("Minuti_prodotti", 0) or 0)
+        if mat not in load:
+            load[mat] = {}
+        load[mat][d] = load[mat].get(d, 0) + m
+    return load
+
+def _sum_minutes_per_material(righe_correnti: list[dict]) -> dict:
+    mins = {"PVC": 0, "Alluminio": 0}
+    for r in righe_correnti:
+        mat = r.get("materiale", "PVC")
+        t = int(r.get("tempo_minuti", 0) or 0)
+        if mat not in mins:
+            mins[mat] = 0
+        mins[mat] += t
+    return mins
+
+def _find_first_start_date_without_moving_existing(dati_esistenti: dict, righe_correnti: list[dict], from_date: date | None = None) -> date:
+    if from_date is None:
+        from_date = date.today()
+
+    # Piano attuale (solo ordini esistenti)
+    _, piano_old = calcola_piano(dati_esistenti)
+    load = _build_load_from_piano(piano_old)
+
+    need = _sum_minutes_per_material(righe_correnti)
+    mats = ["PVC", "Alluminio"]
+
+    d = prossimo_giorno_lavorativo(from_date)
+
+    # Cerca fino a 365 giorni lavorativi avanti
+    for _ in range(365):
+        tmp = {m: dict(load.get(m, {})) for m in mats}
+
+        for m in mats:
+            remaining = int(need.get(m, 0) or 0)
+            if remaining <= 0:
+                continue
+
+            cur = d
+            while remaining > 0:
+                cur = prossimo_giorno_lavorativo(cur)
+
+                used = int(tmp[m].get(str(cur), 0) or 0)
+                cap = int(CAPACITA_MINUTI_GIORNALIERA.get(m, 0) or 0)
+                free = max(0, cap - used)
+
+                if free <= 0:
+                    cur = aggiungi_giorno_lavorativo(cur)
+                    continue
+
+                take = min(free, remaining)
+                tmp[m][str(cur)] = used + take
+                remaining -= take
+
+        # Se arrivo qui, significa che da d in poi lo spazio c'è (prima o poi)
+        return d
+
+    # Fallback: in coda
+    if piano_old:
+        last_day = max(pd.to_datetime([r["Data"] for r in piano_old])).date()
+        return aggiungi_giorno_lavorativo(last_day)
+
+    return prossimo_giorno_lavorativo(date.today())
+
+
+# =========================
 # APP
 # =========================
 st.set_page_config(page_title="Planner Produzione", layout="wide")
@@ -307,9 +381,7 @@ with col2:
     if tipologia == "Battente":
         vetri_totali = st.number_input(
             "Numero vetri TOTALI per questa riga (somma su tutte le strutture)",
-            min_value=1,
-            value=1,
-            step=1,
+            min_value=1, value=1, step=1
         )
     else:
         vetri_totali = 0
@@ -321,15 +393,13 @@ with col2:
 
     with cadd:
         if st.button("➕ Aggiungi riga"):
-            st.session_state["righe_correnti"].append(
-                {
-                    "materiale": materiale,
-                    "tipologia": tipologia,
-                    "quantita_strutture": int(quantita_strutture),
-                    "vetri_totali": int(vetri_totali) if tipologia == "Battente" else "",
-                    "tempo_minuti": int(minuti_riga),
-                }
-            )
+            st.session_state["righe_correnti"].append({
+                "materiale": materiale,
+                "tipologia": tipologia,
+                "quantita_strutture": int(quantita_strutture),
+                "vetri_totali": int(vetri_totali) if tipologia == "Battente" else "",
+                "tempo_minuti": int(minuti_riga)
+            })
             st.success("Riga aggiunta")
 
     with cclear:
@@ -361,6 +431,13 @@ with col2:
                     pass
             ordine_gruppo = max_gruppo + 1
 
+            # ✅ NUOVO: trova data inizio senza spostare gli ordini già inseriti
+            start_suggerito = _find_first_start_date_without_moving_existing(
+                dati_esistenti=dati,
+                righe_correnti=st.session_state["righe_correnti"],
+                from_date=date.today()
+            )
+
             for r in st.session_state["righe_correnti"]:
                 nuovo = {
                     "id": len(dati["ordini"]) + 1,
@@ -373,14 +450,15 @@ with col2:
                     "vetri_totali": r["vetri_totali"],
                     "tempo_minuti": int(r["tempo_minuti"]),
                     "data_richiesta": str(data_richiesta),
-                    "data_inizio_gruppo": str(data_richiesta),  # guida la pianificazione
-                    "inserito_il": str(date.today()),
+                    # ✅ qui NON metto più data_richiesta: metto la prima data disponibile senza spostare gli altri
+                    "data_inizio_gruppo": str(start_suggerito),
+                    "inserito_il": str(date.today())
                 }
                 dati["ordini"].append(nuovo)
 
             salva_dati(dati)
             st.session_state["righe_correnti"] = []
-            st.success(f"Ordine salvato (gruppo {ordine_gruppo})")
+            st.success(f"Ordine salvato (gruppo {ordine_gruppo}) - inizio: {start_suggerito}")
 
 st.divider()
 
@@ -429,11 +507,9 @@ if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
-# -----------------------------
-# SPOSTAMENTO COMMESSA (manuale)
-# -----------------------------
-if "consegne" in st.session_state:
     st.subheader("📦 Sposta inizio produzione commessa")
+
+if "consegne" in st.session_state:
     gruppi = sorted({str(o["Gruppo"]) for o in st.session_state["consegne"]})
 
     g_sel = st.selectbox("Seleziona gruppo", gruppi)
@@ -445,52 +521,49 @@ if "consegne" in st.session_state:
                 o["data_inizio_gruppo"] = str(nuova_data)
 
         salva_dati(dati)
+
         consegne, piano = calcola_piano(dati)
         st.session_state["consegne"] = consegne
         st.session_state["piano"] = piano
+
         st.success(f"Gruppo {g_sel} spostato al {nuova_data}")
         st.rerun()
 
-# -----------------------------
-# GANTT CLASSICO (NO SAB/DOM + GIORNI CONTINUI VISIBILI)
-# -----------------------------
-if "piano" in st.session_state:
+    # =========================
+    # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE) + GIORNI CONTINUI
+    # =========================
     st.subheader("📊 Gantt Produzione (giorno per giorno)")
 
     df = pd.DataFrame(st.session_state.get("piano", []))
     if df.empty:
         st.info("Nessun dato per il Gantt.")
     else:
-        # Date e filtro lun-ven
         df["Data"] = pd.to_datetime(df["Data"])
         df = df[df["Data"].dt.weekday < 5].copy()
 
-        # Giorno in formato dd/mm (categoria)
         df["Giorno"] = df["Data"].dt.strftime("%d/%m")
 
-        # Etichetta commessa
         df["Commessa"] = (
             "Gruppo " + df["Gruppo"].astype(str)
             + " | " + df["Cliente"].astype(str)
             + " | " + df["Prodotto"].astype(str)
         )
 
-        # Aggrego per giorno + commessa
         agg = (
             df.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
-            .agg(strutture=("Strutture_prodotte", "sum"), minuti=("Minuti_prodotti", "sum"))
+              .agg(
+                  strutture=("Strutture_prodotte", "sum"),
+                  minuti=("Minuti_prodotti", "sum")
+              )
         )
 
-        # ✅ Giorni CONTINUI (lun-ven) tra min e max, anche se non ci sono dati
         min_d = df["Data"].min().normalize()
         max_d = df["Data"].max().normalize()
-        all_days = pd.date_range(start=min_d, end=max_d, freq="B")  # B = business days (lun-ven)
-        giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
 
-        # Dataframe "fantasma" con tutti i giorni (serve solo per farli vedere sull'asse)
+        all_days = pd.date_range(start=min_d, end=max_d, freq="B")
+        giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
         df_days = pd.DataFrame({"Giorno": giorni_ordinati})
 
-        # Label base
         agg["label_base"] = (
             "G" + agg["Gruppo"].astype(str)
             + " | " + agg["Cliente"].astype(str)
@@ -515,9 +588,13 @@ if "piano" in st.session_state:
                 + " min"
             )
         else:
-            agg["label"] = agg["label_base"] + "\n" + agg["strutture"].round(1).astype(str) + " strutt."
+            agg["label"] = (
+                agg["label_base"]
+                + "\n"
+                + agg["strutture"].round(1).astype(str)
+                + " strutt."
+            )
 
-        # Ordinamento asse Y
         if ordina == "Per Gruppo":
             sort_y = alt.SortField(field="Gruppo", order="ascending")
         else:
@@ -529,14 +606,14 @@ if "piano" in st.session_state:
                 sort=sort_y,
                 title="Commesse",
                 axis=alt.Axis(labelFontSize=12, labelLimit=500, titleFontSize=13),
-                scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15),
+                scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15)
             ),
             x=alt.X(
                 "Giorno:N",
                 sort=giorni_ordinati,
-                scale=alt.Scale(domain=giorni_ordinati),  # ✅ forza i giorni anche se non ci sono dati
+                scale=alt.Scale(domain=giorni_ordinati),
                 title="Giorni (solo lavorativi)",
-                axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13),
+                axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13)
             ),
             tooltip=[
                 alt.Tooltip("Giorno:N", title="Giorno"),
@@ -546,12 +623,14 @@ if "piano" in st.session_state:
             ],
         )
 
-        # Rettangoli
+        ghost = alt.Chart(df_days).mark_point(opacity=0).encode(
+            x=alt.X("Giorno:N", sort=giorni_ordinati, scale=alt.Scale(domain=giorni_ordinati))
+        )
+
         bars = base.mark_bar(cornerRadius=10).encode(
             color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
         )
 
-        # Testo nel box
         text = alt.Chart(agg).mark_text(
             align="center",
             baseline="middle",
@@ -559,13 +638,8 @@ if "piano" in st.session_state:
             lineBreak="\n",
         ).encode(
             y=alt.Y("Commessa:N", sort=sort_y),
-            x=alt.X("Giorno:N", sort=giorni_ordinati, scale=alt.Scale(domain=giorni_ordinati)),
+            x=alt.X("Giorno:N", sort=giorni_ordinati),
             text="label:N",
-        )
-
-        # Layer invisibile per "agganciare" tutti i giorni all'asse X
-        ghost = alt.Chart(df_days).mark_point(opacity=0).encode(
-            x=alt.X("Giorno:N", sort=giorni_ordinati, scale=alt.Scale(domain=giorni_ordinati))
         )
 
         chart = (ghost + bars + text).properties(
@@ -573,6 +647,8 @@ if "piano" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
