@@ -331,10 +331,10 @@ def calcola_saturazione(piano):
     use_container_width=True,
     column_config={
         "Saturazione_%": st.column_config.ProgressColumn(
-            "Saturazione %",
-            min_value=0.0,
-            max_value=100.0,
-            format="%.0f%%",
+    "Saturazione %",
+    min_value=0.0,
+    max_value=1.0,
+    format="%.0f",
             help="Saturazione giornaliera della capacità produttiva",
         )
     }
@@ -776,6 +776,7 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
