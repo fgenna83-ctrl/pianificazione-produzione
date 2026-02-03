@@ -622,19 +622,46 @@ else:
         on=["Data", "Materiale"],
         how="left"
     )
+# =========================
+# SATURAZIONE % (GIORNO + MATERIALE) -> poi la metto nel piano
+# =========================
+df_piano = pd.DataFrame(st.session_state.get("piano", []))
+
+if not df_piano.empty:
+    # Capacità per materiale (minuti/giorno)
+    df_piano["Capacità"] = df_piano["Materiale"].map(CAPACITA_MINUTI_GIORNALIERA).astype(float)
+
+    # minuti usati per GIORNO + MATERIALE
+    used = (
+        df_piano.groupby(["Data", "Materiale"], as_index=False)["Minuti_prodotti"]
+        .sum()
+        .rename(columns={"Minuti_prodotti": "minuti_usati"})
+    )
+
+    # merge nel piano
+    df_piano = df_piano.merge(used, on=["Data", "Materiale"], how="left")
+
+    # Saturazione in percentuale 0-100
+    df_piano["Saturazione_%"] = (df_piano["minuti_usati"] / df_piano["Capacità"]) * 100
+    df_piano["Saturazione_%"] = df_piano["Saturazione_%"].fillna(0).clip(0, 100)
+
+    # (opzionale) non mostrare colonne tecniche
+    # df_piano = df_piano.drop(columns=["minuti_usati", "Capacità"])
 
     st.dataframe(
-        df_piano,
-        use_container_width=True,
-        column_config={
-            "Saturazione_%": st.column_config.ProgressColumn(
-                "Saturazione %",
-                min_value=0.0,
-                max_value=1.0,
-                format="%.0f%%",
-            )
-        }
-    )
+    df_piano,
+    use_container_width=True,
+    column_config={
+        "Saturazione_%": st.column_config.ProgressColumn(
+            "Saturazione %",
+            min_value=0,
+            max_value=100,
+            format="%.0f%%",
+            help="Saturazione giornaliera della capacità produttiva (per giorno+materiale)",
+        )
+    },
+)
+
 
 
     st.subheader("📦 Sposta inizio produzione commessa")
@@ -778,6 +805,7 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
