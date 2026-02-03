@@ -133,125 +133,184 @@ def calcola_piano(dati):
         except Exception:
             return oggi
 
+    # --- Preparo righe (task) per materiale ---
+    # Ogni riga è un "lavoro" con tot minuti da consumare su quel materiale
+    tasks = []
+    for o in ordini:
+        g = str(o.get("ordine_gruppo", "0") or "0")
+        start_g = safe_date(o.get("data_inizio_gruppo", o.get("data_richiesta", str(oggi))))
+        materiale = o.get("materiale", "PVC")
+        if materiale not in ("PVC", "Alluminio"):
+            materiale = "PVC"
+
+        tempo = int(o.get("tempo_minuti", 0) or 0)
+        if tempo < 0:
+            tempo = 0
+
+        qta_strutture = int(o.get("quantita_strutture", 0) or 0)
+
+        tasks.append({
+            "ref": o,  # riferimento all'ordine originale (così aggiorno consegna_stimata)
+            "ordine_id": o.get("id", ""),
+            "gruppo": g,
+            "cliente": o.get("cliente", ""),
+            "prodotto": o.get("prodotto", ""),
+            "materiale": materiale,
+            "tipologia": o.get("tipologia", ""),
+            "vetri_totali": o.get("vetri_totali", ""),
+            "qta_strutture": qta_strutture,
+            "tempo_totale": tempo,
+            "remaining": tempo,
+            "start_group": prossimo_giorno_lavorativo(start_g),
+        })
+
+    # Ordinamento “naturale”: prima chi ha start_group più vecchia, poi gruppo, poi id
+    def key_task(t):
+        try:
+            gnum = int(t["gruppo"])
+        except Exception:
+            gnum = 0
+        try:
+            oid = int(t["ordine_id"])
+        except Exception:
+            oid = 0
+        return (t["start_group"], gnum, oid)
+
+    tasks.sort(key=key_task)
+
+    # Stato per materiale
     stato = {
         "PVC": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["PVC"]},
         "Alluminio": {"giorno": oggi, "usati": 0, "cap": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]},
     }
 
     piano = []
-    consegna_per_gruppo = {}
+    fine_per_gruppo = {}  # gruppo -> data fine (massima)
+    baseinfo_per_gruppo = {}  # gruppo -> {cliente, prodotto}
+    tempotot_per_gruppo = {}  # gruppo -> minuti tot
 
-    gruppi_map = {}
-    for o in ordini:
-        g = o.get("ordine_gruppo", "0")
-        if g is None or str(g).strip() == "":
-            g = "0"
-        g = str(g)
-        gruppi_map.setdefault(g, []).append(o)
+    # Per velocizzare: separo tasks per materiale
+    tasks_by_mat = {"PVC": [], "Alluminio": []}
+    for t in tasks:
+        tasks_by_mat[t["materiale"]].append(t)
 
-    def gruppo_sort_key(g):
-        righe = gruppi_map[g]
-        d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(oggi)))
-        start = safe_date(d0)
-        try:
-            gnum = int(g)
-        except Exception:
-            gnum = 0
-        return (start, gnum, g)
+    # Pianifica un materiale in modo “work-conserving”
+    def schedule_material(mat: str):
+        cap = stato[mat]["cap"]
+        giorno = stato[mat]["giorno"]
+        usati = stato[mat]["usati"]
 
-    gruppi_ordinati = sorted(gruppi_map.keys(), key=gruppo_sort_key)
+        pending = tasks_by_mat[mat]
 
-    def pianifica_riga(o):
-        materiale = o.get("materiale", "PVC")
-        if materiale not in stato:
-            materiale = "PVC"
+        # finché ci sono task su questo materiale
+        while True:
+            # task eleggibili oggi (start_group <= oggi e remaining > 0)
+            eligible = [t for t in pending if t["remaining"] > 0 and t["start_group"] <= giorno]
 
-        cap = stato[materiale]["cap"]
-        giorno = stato[materiale]["giorno"]
-        usati = stato[materiale]["usati"]
+            if not eligible:
+                # se non c'è nulla oggi, salto al prossimo start_group disponibile
+                future = [t for t in pending if t["remaining"] > 0]
+                if not future:
+                    break  # finito tutto
+                next_start = min(t["start_group"] for t in future)
+                if giorno < next_start:
+                    giorno = prossimo_giorno_lavorativo(next_start)
+                    usati = 0
+                    continue
+                # fallback
+                giorno = aggiungi_giorno_lavorativo(giorno)
+                usati = 0
+                continue
 
-        tempo_totale = int(o.get("tempo_minuti", 0) or 0)
-        tempo_totale = max(0, tempo_totale)
+            # prendo il primo eleggibile (priorità naturale)
+            eligible.sort(key=key_task)
+            t = eligible[0]
 
-        remaining = tempo_totale
-        qta_strutture = int(o.get("quantita_strutture", 0) or 0)
-
-        while remaining > 0:
             disponibili = cap - usati
             if disponibili <= 0:
                 giorno = aggiungi_giorno_lavorativo(giorno)
                 usati = 0
                 continue
 
-            prodotti_oggi = min(disponibili, remaining)
-            usati += prodotti_oggi
-            remaining -= prodotti_oggi
+            lavoro = min(disponibili, t["remaining"])
+            t["remaining"] -= lavoro
+            usati += lavoro
 
+            # strutture prodotte oggi (stima proporzionale)
             strutture_oggi = 0.0
-            if tempo_totale > 0 and qta_strutture > 0:
-                strutture_oggi = (prodotti_oggi / tempo_totale) * qta_strutture
+            if t["tempo_totale"] > 0 and t["qta_strutture"] > 0:
+                strutture_oggi = (lavoro / t["tempo_totale"]) * t["qta_strutture"]
 
             piano.append({
                 "Data": str(giorno),
-                "Ordine": o.get("id", ""),
-                "Gruppo": o.get("ordine_gruppo", ""),
-                "Cliente": o.get("cliente", ""),
-                "Prodotto": o.get("prodotto", ""),
-                "Materiale": materiale,
-                "Tipologia": o.get("tipologia", ""),
-                "Qta_strutture": qta_strutture,
-                "Vetri_totali": o.get("vetri_totali", ""),
-                "Minuti_prodotti": int(prodotti_oggi),
+                "Ordine": t["ordine_id"],
+                "Gruppo": t["gruppo"],
+                "Cliente": t["cliente"],
+                "Prodotto": t["prodotto"],
+                "Materiale": mat,
+                "Tipologia": t["tipologia"],
+                "Qta_strutture": t["qta_strutture"],
+                "Vetri_totali": t["vetri_totali"],
+                "Minuti_prodotti": int(lavoro),
                 "Minuti_residui_materiale": int(cap - usati),
                 "Strutture_prodotte": round(strutture_oggi, 2),
             })
 
-            if remaining > 0 and usati >= cap:
+            # aggiorno info gruppo
+            baseinfo_per_gruppo.setdefault(t["gruppo"], {"Cliente": t["cliente"], "Prodotto": t["prodotto"]})
+            tempotot_per_gruppo[t["gruppo"]] = tempotot_per_gruppo.get(t["gruppo"], 0) + 0  # lo setto dopo
+
+            # se ho finito questo task, consegna stimata riga = oggi (fine su quel materiale)
+            if t["remaining"] <= 0:
+                t["ref"]["consegna_stimata"] = str(giorno)
+                # fine gruppo = max delle righe
+                if t["gruppo"] not in fine_per_gruppo:
+                    fine_per_gruppo[t["gruppo"]] = giorno
+                else:
+                    fine_per_gruppo[t["gruppo"]] = max(fine_per_gruppo[t["gruppo"]], giorno)
+
+            # se ho esaurito cap, domani
+            if usati >= cap:
                 giorno = aggiungi_giorno_lavorativo(giorno)
                 usati = 0
 
-        o["consegna_stimata"] = str(giorno)
+        # salvo stato
+        stato[mat]["giorno"] = giorno
+        stato[mat]["usati"] = usati
 
-        stato[materiale]["giorno"] = giorno
-        stato[materiale]["usati"] = usati
+    # pianifico PVC e Alluminio indipendenti (non si bloccano a vicenda)
+    schedule_material("PVC")
+    schedule_material("Alluminio")
 
-        return giorno
+    # tempo totale per gruppo (somma righe originali, come prima)
+    for o in ordini:
+        g = str(o.get("ordine_gruppo", "0") or "0")
+        tempotot_per_gruppo[g] = tempotot_per_gruppo.get(g, 0) + int(o.get("tempo_minuti", 0) or 0)
 
-    for g in gruppi_ordinati:
-        righe = gruppi_map[g]
-
-        d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(oggi)))
-        start_gruppo = prossimo_giorno_lavorativo(safe_date(d0))
-
-        for mat in stato:
-            if stato[mat]["giorno"] < start_gruppo:
-                stato[mat]["giorno"] = start_gruppo
-                stato[mat]["usati"] = 0
-
-        righe.sort(key=lambda o: (o.get("materiale", "PVC"), int(o.get("id", 0) or 0)))
-
-        fine_righe = []
-        for r in righe:
-            fine_righe.append(pianifica_riga(r))
-
-        fine_commessa = max(fine_righe) if fine_righe else stato["PVC"]["giorno"]
-        fine_commessa = prossimo_giorno_lavorativo(fine_commessa)
-
-        base = righe[0] if righe else {}
-        consegna_per_gruppo[g] = {
+    # costruisco consegne per gruppo
+    consegne = []
+    for g, fine in fine_per_gruppo.items():
+        info = baseinfo_per_gruppo.get(g, {"Cliente": "", "Prodotto": ""})
+        consegne.append({
             "Gruppo": g,
-            "Cliente": base.get("cliente", ""),
-            "Prodotto": base.get("prodotto", ""),
-            "Tempo_totale_minuti": int(sum(int(r.get("tempo_minuti", 0) or 0) for r in righe)),
-            "Stimata": str(fine_commessa),
-        }
+            "Cliente": info.get("Cliente", ""),
+            "Prodotto": info.get("Prodotto", ""),
+            "Tempo_totale_minuti": int(tempotot_per_gruppo.get(g, 0)),
+            "Stimata": str(prossimo_giorno_lavorativo(fine)),
+        })
 
-        for mat in stato:
-            if stato[mat]["giorno"] < fine_commessa:
-                stato[mat]["giorno"] = fine_commessa
-                stato[mat]["usati"] = 0
+    # ordino consegne per gruppo numerico
+    def grp_key(x):
+        try:
+            return int(x.get("Gruppo", 0))
+        except Exception:
+            return 0
+
+    consegne.sort(key=grp_key)
 
     salva_dati(dati)
+    return consegne, piano
+
 
     consegne_ordini = list(consegna_per_gruppo.values())
 
@@ -647,6 +706,8 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
