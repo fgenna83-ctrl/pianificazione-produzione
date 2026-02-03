@@ -325,7 +325,9 @@ def calcola_saturazione(piano):
     )
 
     agg["Capacità"] = agg["Materiale"].map(CAPACITA_MINUTI_GIORNALIERA)
-    agg["Saturazione_%"] = (agg["minuti_usati"] / agg["Capacità"] * 100).round(1)
+    agg["Saturazione_%"] = (agg["minuti_usati"] / agg["Capacità"]).round(3)
+    agg["Saturazione_testo"] = (agg["Saturazione_%"] * 100).round(1).astype(str) + " %"
+
 
     return agg.sort_values(["Giorno", "Materiale"])
 
