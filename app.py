@@ -596,27 +596,47 @@ if "consegne" in st.session_state:
 
 if "piano" in st.session_state:
     st.subheader("🧾 Piano produzione giorno per giorno (spezzato a minuti)")
-    st.dataframe(st.session_state["piano"], use_container_width=True)
+
+df_piano = pd.DataFrame(st.session_state.get("piano", []))
+
+if df_piano.empty:
+    st.info("Nessun dato per il piano.")
+else:
+    # capacità per materiale
+    cap_map = {"PVC": CAPACITA_MINUTI_GIORNALIERA["PVC"], "Alluminio": CAPACITA_MINUTI_GIORNALIERA["Alluminio"]}
+
+    # calcolo saturazione per giorno+materiale (sommando i minuti del piano)
+    sat = (
+        df_piano.groupby(["Data", "Materiale"], as_index=False)["Minuti_prodotti"]
+        .sum()
+        .rename(columns={"Minuti_prodotti": "minuti_usati"})
+    )
+    sat["Capacità"] = sat["Materiale"].map(cap_map).fillna(0)
+    sat["Saturazione_%"] = (sat["minuti_usati"] / sat["Capacità"]).clip(lower=0, upper=1).fillna(0)
+
+    # riattacco la saturazione a ogni riga del piano (stesso giorno e materiale)
+    df_piano = df_piano.merge(
+        sat[["Data", "Materiale", "Saturazione_%"]],
+        on=["Data", "Materiale"],
+        how="left"
+    )
+
+    st.dataframe(
+        df_piano,
+        use_container_width=True,
+        column_config={
+            "Saturazione_%": st.column_config.ProgressColumn(
+                "Saturazione %",
+                min_value=0.0,
+                max_value=1.0,
+                format="%.0f%%",
+            )
+        }
+    )
+
 
     st.subheader("📦 Sposta inizio produzione commessa")
-    st.subheader("📈 Saturazione produzione (PVC / Alluminio)")
-
-    sat = calcola_saturazione(st.session_state["piano"])
-
-    if sat.empty:
-        st.info("Nessun dato di saturazione.")
-    else:
-        st.dataframe(
-            sat,
-            use_container_width=True,
-            column_config={
-                "Saturazione_%": st.column_config.ProgressColumn(
-                    "Saturazione %",
-                    min_value=0,
-                    max_value=100,
-                )
-            }
-        )
+    
 
 if "consegne" in st.session_state:
     gruppi = sorted({str(o["Gruppo"]) for o in st.session_state["consegne"]})
@@ -756,6 +776,7 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
