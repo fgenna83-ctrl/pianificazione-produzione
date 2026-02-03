@@ -132,6 +132,69 @@ def calcola_piano(dati):
             return date.fromisoformat(str(s))
         except Exception:
             return oggi
+def _is_weekend(d: date) -> bool:
+    return d.weekday() >= 5
+
+def _next_workday(d: date) -> date:
+    while _is_weekend(d):
+        d = d + timedelta(days=1)
+    return d
+
+def check_spazio_primo_giorno(dati, piano_corrente, gruppo_sel: str, nuova_data: date):
+    """
+    Ritorna (ok: bool, msg: str)
+    - ok=True se il primo giorno ha spazio ALMENO per una parte del gruppo
+    - ok=False se il primo giorno è pieno per tutti i materiali necessari al gruppo
+    """
+    if nuova_data is None:
+        return False, "Seleziona una data valida."
+
+    nuova_data = _next_workday(nuova_data)
+    day_str = str(nuova_data)
+
+    # 1) Materiali necessari al gruppo (quanti minuti totali per materiale)
+    righe_gruppo = [o for o in dati.get("ordini", []) if str(o.get("ordine_gruppo")) == str(gruppo_sel)]
+    if not righe_gruppo:
+        return False, f"Gruppo {gruppo_sel} non trovato."
+
+    minuti_per_materiale = {}
+    for r in righe_gruppo:
+        mat = r.get("materiale", "PVC")
+        minuti = int(r.get("tempo_minuti", 0) or 0)
+        minuti_per_materiale[mat] = minuti_per_materiale.get(mat, 0) + minuti
+
+    materiali_necessari = [m for m, tot in minuti_per_materiale.items() if tot > 0]
+    if not materiali_necessari:
+        return False, "Questo gruppo non ha minuti da produrre."
+
+    # 2) Capacità già occupata quel giorno (escludo il gruppo stesso se già pianificato)
+    df = pd.DataFrame(piano_corrente or [])
+    if df.empty:
+        # se non c'è piano, c'è sicuramente spazio
+        return True, ""
+
+    df["Gruppo"] = df["Gruppo"].astype(str)
+    df_giorno = df[(df["Data"] == day_str) & (df["Gruppo"] != str(gruppo_sel))].copy()
+
+    usato = {}
+    if not df_giorno.empty:
+        tmp = df_giorno.groupby("Materiale")["Minuti_prodotti"].sum().to_dict()
+        usato.update({k: int(v) for k, v in tmp.items()})
+
+    # 3) Minuti disponibili per materiale
+    disponibile = {}
+    for mat in materiali_necessari:
+        cap = int(CAPACITA_MINUTI_GIORNALIERA.get(mat, 0))
+        disponibile[mat] = max(0, cap - int(usato.get(mat, 0)))
+
+    # 4) Regola richiesta:
+    #    se TUTTI i materiali necessari hanno disponibile == 0 -> NON c'è spazio (alert)
+    if all(disponibile.get(mat, 0) <= 0 for mat in materiali_necessari):
+        dettaglio = ", ".join([f"{m}:0/{CAPACITA_MINUTI_GIORNALIERA.get(m,0)}" for m in materiali_necessari])
+        return False, f"❌ Non c'è spazio il {day_str} (capacità piena). Dettaglio: {dettaglio}"
+
+    # altrimenti ok: entra almeno in parte e poi slitta
+    return True, ""
 
     # --- Preparo righe (task) per materiale ---
     # Ogni riga è un "lavoro" con tot minuti da consumare su quel materiale
@@ -674,18 +737,31 @@ if "consegne" in st.session_state:
     nuova_data = st.date_input("Nuova data inizio produzione")
 
     if st.button("📌 Applica spostamento"):
-        for o in dati["ordini"]:
-            if str(o.get("ordine_gruppo")) == g_sel:
-                o["data_inizio_gruppo"] = str(nuova_data)
+    # uso il piano attuale come “occupazione” di riferimento
+     piano_corrente = st.session_state.get("piano", [])
 
-        salva_dati(dati)
+    ok_spazio, msg = check_spazio_primo_giorno(dati, piano_corrente, g_sel, nuova_data)
 
-        consegne, piano = calcola_piano(dati)
-        st.session_state["consegne"] = consegne
-        st.session_state["piano"] = piano
+    if not ok_spazio:
+        st.error(msg)
+        st.stop()  # non applica nulla
 
-        st.success(f"Gruppo {g_sel} spostato al {nuova_data}")
-        st.rerun()
+    # OK: applico la nuova data (se entra solo in parte poi slitta automaticamente)
+    nuova_data_ok = _next_workday(nuova_data)
+
+    for o in dati["ordini"]:
+        if str(o.get("ordine_gruppo")) == str(g_sel):
+            o["data_inizio_gruppo"] = str(nuova_data_ok)
+
+    salva_dati(dati)
+
+    consegne, piano = calcola_piano(dati)
+    st.session_state["consegne"] = consegne
+    st.session_state["piano"] = piano
+
+    st.success(f"✅ Gruppo {g_sel} spostato al {nuova_data_ok} (se necessario slitta sui giorni successivi)")
+    st.rerun()
+
 
     # =========================
     # GANTT CLASSICO (NO SAB/DOM ANCHE ASSE) + GIORNI CONTINUI
@@ -805,6 +881,8 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
