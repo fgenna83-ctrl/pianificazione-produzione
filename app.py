@@ -326,7 +326,20 @@ def calcola_saturazione(piano):
 
     agg["Capacità"] = agg["Materiale"].map(CAPACITA_MINUTI_GIORNALIERA)
     agg["Saturazione_%"] = (agg["minuti_usati"] / agg["Capacità"]).round(3)
-    agg["Saturazione_testo"] = (agg["Saturazione_%"] * 100).round(1).astype(str) + " %"
+    st.dataframe(
+    agg,
+    use_container_width=True,
+    column_config={
+        "Saturazione_%": st.column_config.ProgressColumn(
+            "Saturazione %",
+            min_value=0.0,
+            max_value=1.0,
+            format="%.0f%%",
+            help="Saturazione giornaliera della capacità produttiva",
+        )
+    }
+)
+
 
 
     return agg.sort_values(["Giorno", "Materiale"])
@@ -743,12 +756,6 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
-
-
-
-
-
-
 
 
 
