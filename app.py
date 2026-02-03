@@ -311,6 +311,23 @@ def calcola_piano(dati):
     salva_dati(dati)
     return consegne, piano
 
+def calcola_saturazione(piano):
+    if not piano:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(piano)
+    df["Data"] = pd.to_datetime(df["Data"])
+    df["Giorno"] = df["Data"].dt.strftime("%d/%m")
+
+    agg = (
+        df.groupby(["Giorno", "Materiale"], as_index=False)
+          .agg(minuti_usati=("Minuti_prodotti", "sum"))
+    )
+
+    agg["Capacità"] = agg["Materiale"].map(CAPACITA_MINUTI_GIORNALIERA)
+    agg["Saturazione_%"] = (agg["minuti_usati"] / agg["Capacità"] * 100).round(1)
+
+    return agg.sort_values(["Giorno", "Materiale"])
 
     consegne_ordini = list(consegna_per_gruppo.values())
 
@@ -567,6 +584,24 @@ if "piano" in st.session_state:
     st.dataframe(st.session_state["piano"], use_container_width=True)
 
     st.subheader("📦 Sposta inizio produzione commessa")
+    st.subheader("📈 Saturazione produzione (PVC / Alluminio)")
+
+    sat = calcola_saturazione(st.session_state["piano"])
+
+    if sat.empty:
+        st.info("Nessun dato di saturazione.")
+    else:
+        st.dataframe(
+            sat,
+            use_container_width=True,
+            column_config={
+                "Saturazione_%": st.column_config.ProgressColumn(
+                    "Saturazione %",
+                    min_value=0,
+                    max_value=100,
+                )
+            }
+        )
 
 if "consegne" in st.session_state:
     gruppi = sorted({str(o["Gruppo"]) for o in st.session_state["consegne"]})
@@ -706,6 +741,8 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
+
 
 
 
