@@ -147,15 +147,23 @@ def _group_orders(ordini):
         gruppi_map.setdefault(g, []).append(o)
     return gruppi_map
 
-def _gruppo_sort_key(gruppi_map, g: str):
+def  _gruppo_sort_key(gruppi_map, g: str):
     righe = gruppi_map[g]
-    d0 = righe[0].get("data_inizio_gruppo", righe[0].get("data_richiesta", str(date.today())))
-    start = safe_date(d0)
+
+    # data gruppo = MIN tra tutte le righe (robusto)
+    dates = []
+    for r in righe:
+        d0 = r.get("data_inizio_gruppo", r.get("data_richiesta", str(date.today())))
+        dates.append(safe_date(d0))
+    start = prossimo_giorno_lavorativo(min(dates)) if dates else prossimo_giorno_lavorativo(date.today())
+
     try:
         gnum = int(g)
     except Exception:
         gnum = 0
+
     return (start, gnum, g)
+
 
 def _norm_tip(tip: str) -> str:
     tip = (tip or "").strip()
@@ -182,11 +190,15 @@ def _calcola_taglio(dati):
         righe = gruppi_map[g]
         base = righe[0] if righe else {}
 
-        # start taglio gruppo (input utente) -> vale per entrambi i materiali
-        d0 = base.get("data_inizio_gruppo", base.get("data_richiesta", str(oggi)))
-        start_group = prossimo_giorno_lavorativo(safe_date(d0))
+# start gruppo = MIN tra tutte le righe del gruppo (robusto)
+    dates = []
+    for r in righe:
+      d0 = r.get("data_inizio_gruppo", r.get("data_richiesta", str(oggi)))
+    dates.append(safe_date(d0))
+    start_group = prossimo_giorno_lavorativo(min(dates)) if dates else oggi
 
-        for mat in ("PVC", "Alluminio"):
+
+    for mat in ("PVC", "Alluminio"):
             # sommo pezzi per tipologia per quel materiale
             rem = {"Battente": 0, "Scorrevole": 0, "Struttura speciale": 0}
             for r in righe:
@@ -989,6 +1001,7 @@ if "consegne" in st.session_state:
         )
 
         st.altair_chart(chart, use_container_width=True)
+
 
 
 
