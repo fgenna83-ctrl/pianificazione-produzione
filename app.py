@@ -5,43 +5,13 @@ import os
 import hashlib
 import pandas as pd
 import altair as alt
-import streamlit.components.v1 as components
 from pathlib import Path
-
-# =========================
-# TAGLIO: capacità (pezzi/giorno) per macchina/materiale e tipologia
-# =========================
-CAP_TAGLIO = {
-    ("PVC", "Battente"): 15,
-    ("PVC", "Scorrevole"): 10,
-    ("PVC", "Struttura speciale"): 5,
-    ("Alluminio", "Battente"): 15,
-    ("Alluminio", "Scorrevole"): 10,
-    ("Alluminio", "Struttura speciale"): 5,
-}
+import streamlit.components.v1 as components
 
 # =========================
 # FILE DATI
 # =========================
 FILE_DATI = "dati_produzione.json"
-
-# Capacità giornaliera produzione (minuti/giorno) per materiale
-CAPACITA_MINUTI_GIORNALIERA = {
-    "PVC": 4500,
-    "Alluminio": 3000,
-}
-
-MINUTI_8_ORE = 8 * 60  # 480
-
-# =========================
-# COMPONENTE (GANTT DRAG&DROP)
-# Cartella: gantt_dnd/index.html
-# =========================
-_COMPONENT_DIR = Path(__file__).resolve().parent / "gantt_dnd"
-if _COMPONENT_DIR.exists() and (_COMPONENT_DIR / "index.html").exists():
-    gantt_dnd = components.declare_component("gantt_dnd", path=str(_COMPONENT_DIR))
-else:
-    gantt_dnd = None
 
 # =========================
 # GIORNI LAVORATIVI (LUN-VEN)
@@ -63,25 +33,35 @@ def safe_date(s):
         return prossimo_giorno_lavorativo(date.today())
 
 # =========================
-# NORMALIZZAZIONI (evita mismatch e cap=0)
+# NORMALIZZAZIONI
 # =========================
 def norm_materiale(x: str) -> str:
     x = (x or "").strip()
-    x_low = x.lower()
-    if "allu" in x_low:
+    xl = x.lower()
+    if "allu" in xl:
         return "Alluminio"
-    return "PVC" if x_low == "pvc" or x == "" else x
+    if xl == "pvc" or x == "":
+        return "PVC"
+    # fallback
+    return "PVC"
 
 def norm_tipologia(x: str) -> str:
     x = (x or "").strip()
-    x_low = x.lower()
-    if x_low in ("speciale", "struttura_speciale", "strutturaspeciale", "struttura speciale"):
-        return "Struttura speciale"
-    if x_low == "battente":
+    xl = x.lower()
+    if xl in ("battente",):
         return "Battente"
-    if x_low == "scorrevole":
+    if xl in ("scorrevole",):
         return "Scorrevole"
-    return x  # fallback
+    if xl in ("struttura speciale", "strutturaspeciale", "speciale", "struttura_speciale"):
+        return "Struttura speciale"
+    return x
+
+def tipologia_cluster(tip: str) -> str:
+    """Raggruppo scorrevole + speciale perché hanno stesse capacità."""
+    tip = norm_tipologia(tip)
+    if tip in ("Scorrevole", "Struttura speciale"):
+        return "Scorrevole/Speciale"
+    return "Battente"
 
 # =========================
 # LOGIN (Streamlit Secrets)
@@ -131,246 +111,186 @@ def salva_dati(dati):
         json.dump(dati, f, ensure_ascii=False, indent=2)
 
 # =========================
-# TEMPI PRODUZIONE
+# CAPACITÀ PER FASE (unità/giorno)
+# unità:
+#  - Battente: "vetri"
+#  - Scorrevole/Speciale: "strutture"
 # =========================
-def tempo_riga(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int) -> int:
+
+# Risorse separate:
+# - Taglio PVC, Taglio Alluminio
+# - Saldatura solo PVC
+# - Assemblaggio PVC, Assemblaggio Alluminio
+# Risorse condivise:
+# - Vetrazione (totale PVC+Alluminio)
+# - Imballaggio (totale PVC+Alluminio)
+
+CAP = {
+    # -------- Battente (vetri/giorno)
+    ("Taglio", "PVC", "Battente"): 60,
+    ("Taglio", "Alluminio", "Battente"): 40,
+
+    ("Saldatura", "PVC", "Battente"): 40,  # solo PVC
+
+    ("Assemblaggio", "PVC", "Battente"): 50,
+    ("Assemblaggio", "Alluminio", "Battente"): 30,
+
+    # Vetrazione condivisa -> useremo materiale="ALL"
+    ("Vetrazione", "ALL", "Battente"): 40,
+
+    # Imballaggio condiviso -> useremo materiale="ALL"
+    ("Imballaggio", "ALL", "Battente"): 60,
+
+    # -------- Scorrevole/Speciale (strutture/giorno)
+    ("Taglio", "PVC", "Scorrevole/Speciale"): 10,
+    ("Taglio", "Alluminio", "Scorrevole/Speciale"): 10,
+
+    ("Saldatura", "PVC", "Scorrevole/Speciale"): 10,  # solo PVC
+
+    ("Assemblaggio", "PVC", "Scorrevole/Speciale"): 10,
+    ("Assemblaggio", "Alluminio", "Scorrevole/Speciale"): 10,
+
+    # Vetrazione condivisa
+    ("Vetrazione", "ALL", "Scorrevole/Speciale"): 15,
+
+    # Imballaggio condiviso (ASSUNZIONE: stesso limite 60 anche per strutture)
+    ("Imballaggio", "ALL", "Scorrevole/Speciale"): 60,
+}
+
+PHASES_PVC = ["Taglio", "Saldatura", "Assemblaggio", "Vetrazione", "Imballaggio"]
+PHASES_ALLU = ["Taglio", "Assemblaggio", "Vetrazione"]
+
+# =========================
+# INPUT: calcolo carico per riga
+# =========================
+def carico_riga_unita(o: dict) -> tuple[str, int]:
     """
-    Battente:
-      - PVC: 90 min per vetro (vetri_totali)
-      - Alluminio: 90 min per vetro (vetri_totali) + 30 min per struttura (quantita_strutture)
-    Scorrevole e Struttura speciale:
-      - 480 min per struttura (quantita_strutture) indipendente dal materiale
+    Ritorna (cluster, qta)
+      - Battente -> qta = vetri_totali
+      - Scorrevole/Speciale -> qta = quantita_strutture
     """
-    materiale = norm_materiale(materiale)
-    tipologia = norm_tipologia(tipologia)
-
-    if tipologia == "Battente":
-        t = int(vetri_totali) * 90
-        if materiale == "Alluminio":
-            t += int(quantita_strutture) * 30
-        return t
-
-    return int(quantita_strutture) * MINUTI_8_ORE
-
-def minuti_preview(materiale: str, tipologia: str, quantita_strutture: int, vetri_totali: int):
-    tot = tempo_riga(materiale, tipologia, quantita_strutture, vetri_totali)
-    if quantita_strutture > 0:
-        return tot, int(round(tot / quantita_strutture))
-    return tot, tot
+    tip = tipologia_cluster(o.get("tipologia", "Battente"))
+    if tip == "Battente":
+        q = int(o.get("vetri_totali", 0) or 0)
+        return tip, max(0, q)
+    else:
+        q = int(o.get("quantita_strutture", 0) or 0)
+        return tip, max(0, q)
 
 # =========================
-# HELPERS: TAGLIO - LOAD & NEED
+# BUILD NEEDS per fase
 # =========================
-def _build_load_taglio_excluding_group(piano_taglio: list[dict], gruppo_escluso: str) -> dict:
-    # load[materiale][tipologia][data] = pezzi tagliati
-    load = {}
-    for r in (piano_taglio or []):
-        if str(r.get("Gruppo")) == str(gruppo_escluso):
-            continue
-        mat = norm_materiale(r.get("Materiale", "PVC"))
-        tip = norm_tipologia(r.get("Tipologia", "Battente"))
-        ds = str(r.get("Data"))
-        pezzi = int(r.get("Strutture_tagliate", 0) or 0)
-        load.setdefault(mat, {}).setdefault(tip, {})
-        load[mat][tip][ds] = load[mat][tip].get(ds, 0) + pezzi
-    return load
-
-def _need_taglio_for_group(dati: dict, gruppo: str) -> dict:
-    # need[materiale][tipologia] = strutture da tagliare
-    need = {}
+def build_group_meta(dati: dict):
+    meta = {}
     for o in dati.get("ordini", []):
-        if str(o.get("ordine_gruppo")) != str(gruppo):
-            continue
+        g = str(o.get("ordine_gruppo"))
+        if g not in meta:
+            meta[g] = {
+                "Cliente": o.get("cliente", ""),
+                "Prodotto": o.get("prodotto", ""),
+                "Inserito": safe_date(o.get("inserito_il") or date.today()),
+                "StartTaglio": safe_date(o.get("data_inizio_taglio_gruppo") or o.get("inserito_il") or date.today()),
+            }
+        else:
+            # tengo il più vecchio come data inserimento, e start taglio più vecchio
+            meta[g]["Inserito"] = min(meta[g]["Inserito"], safe_date(o.get("inserito_il") or date.today()))
+            meta[g]["StartTaglio"] = min(meta[g]["StartTaglio"], safe_date(o.get("data_inizio_taglio_gruppo") or o.get("inserito_il") or date.today()))
+    return meta
+
+def build_needs_by_phase(dati: dict):
+    """
+    needs[phase][resource_key][group] = qty
+    resource_key:
+      - per fasi separate: (materiale, cluster) es: ("PVC","Battente")
+      - per fasi condivise: ("ALL", cluster)
+    """
+    needs = {p: {} for p in ["Taglio", "Saldatura", "Assemblaggio", "Vetrazione", "Imballaggio"]}
+
+    for o in dati.get("ordini", []):
+        g = str(o.get("ordine_gruppo"))
         mat = norm_materiale(o.get("materiale", "PVC"))
-        tip = norm_tipologia(o.get("tipologia", "Battente"))
-        qta = int(o.get("quantita_strutture", 0) or 0)
+        cluster, qta = carico_riga_unita(o)
         if qta <= 0:
             continue
-        need.setdefault(mat, {})
-        need[mat][tip] = need[mat].get(tip, 0) + qta
-    return need
 
-def _day_has_any_cut_capacity(load_taglio: dict, need_taglio: dict, day: date) -> bool:
-    day = prossimo_giorno_lavorativo(day)
-    ds = str(day)
+        # TAGLIO: sempre (PVC e Allu)
+        needs["Taglio"].setdefault((mat, cluster), {})
+        needs["Taglio"][(mat, cluster)][g] = needs["Taglio"][(mat, cluster)].get(g, 0) + qta
 
-    for mat, tips in need_taglio.items():
-        for tip, qta in tips.items():
-            if qta <= 0:
-                continue
-            cap = int(CAP_TAGLIO.get((mat, tip), 0))
-            used = int(load_taglio.get(mat, {}).get(tip, {}).get(ds, 0) or 0)
-            free = max(0, cap - used)
-            if free > 0:
-                return True
-    return False
+        # SALDATURA: solo PVC
+        if mat == "PVC":
+            needs["Saldatura"].setdefault((mat, cluster), {})
+            needs["Saldatura"][(mat, cluster)][g] = needs["Saldatura"][(mat, cluster)].get(g, 0) + qta
 
-def _find_first_cut_day_with_capacity(load_taglio: dict, need_taglio: dict, start_day: date, max_days: int = 365) -> date:
-    d = prossimo_giorno_lavorativo(start_day)
-    for _ in range(max_days):
-        if _day_has_any_cut_capacity(load_taglio, need_taglio, d):
-            return d
-        d = aggiungi_giorno_lavorativo(d)
-    return prossimo_giorno_lavorativo(start_day)
+        # ASSEMBLAGGIO: PVC e Allu
+        needs["Assemblaggio"].setdefault((mat, cluster), {})
+        needs["Assemblaggio"][(mat, cluster)][g] = needs["Assemblaggio"][(mat, cluster)].get(g, 0) + qta
 
-def _insert_group_taglio_into_free_capacity(dati: dict, piano_taglio_base: list[dict], gruppo: str, start_day: date) -> tuple[list[dict], date, date]:
-    """
-    Inserisce TAGLIO del gruppo nei buchi a partire da start_day.
-    DIFFERENZA IMPORTANTE:
-    ✅ se start_day è pieno, NON errore: parte dal primo giorno utile successivo.
-    Ritorna: (piano_taglio_add, last_cut_day, actual_start_day)
-    """
-    start_day = prossimo_giorno_lavorativo(start_day)
+        # VETRAZIONE: condivisa ALL
+        needs["Vetrazione"].setdefault(("ALL", cluster), {})
+        needs["Vetrazione"][("ALL", cluster)][g] = needs["Vetrazione"][("ALL", cluster)].get(g, 0) + qta
 
-    load = _build_load_taglio_excluding_group(piano_taglio_base, gruppo)
-    need = _need_taglio_for_group(dati, gruppo)
+        # IMBALLAGGIO: solo PVC secondo tuo processo? (tu hai scritto PVC sì, Alluminio no)
+        # Se vuoi anche Alluminio in imballaggio, togli questo if.
+        if mat == "PVC":
+            needs["Imballaggio"].setdefault(("ALL", cluster), {})
+            needs["Imballaggio"][("ALL", cluster)][g] = needs["Imballaggio"][("ALL", cluster)].get(g, 0) + qta
 
-    if not need:
-        # niente da tagliare
-        return [], start_day, start_day
-
-    # ✅ invece di raise: trova primo giorno utile
-    actual_start = _find_first_cut_day_with_capacity(load, need, start_day)
-
-    righe = [o for o in dati.get("ordini", []) if str(o.get("ordine_gruppo")) == str(gruppo)]
-    cliente = (righe[0].get("cliente") if righe else "")
-    prodotto = (righe[0].get("prodotto") if righe else "")
-
-    piano_add = []
-    last_day = actual_start
-
-    for mat, tips in need.items():
-        for tip, remaining in tips.items():
-            remaining = int(remaining or 0)
-            if remaining <= 0:
-                continue
-
-            cap = int(CAP_TAGLIO.get((mat, tip), 0))
-            if cap <= 0:
-                # se manca cap, lo salto (non blocco l’app)
-                continue
-
-            day = actual_start
-            while remaining > 0:
-                day = prossimo_giorno_lavorativo(day)
-                ds = str(day)
-
-                used = int(load.get(mat, {}).get(tip, {}).get(ds, 0) or 0)
-                free = max(0, cap - used)
-
-                if free <= 0:
-                    day = aggiungi_giorno_lavorativo(day)
-                    continue
-
-                take = min(free, remaining)
-                load.setdefault(mat, {}).setdefault(tip, {})
-                load[mat][tip][ds] = used + take
-                remaining -= take
-
-                piano_add.append({
-                    "Data": ds,
-                    "Gruppo": str(gruppo),
-                    "Cliente": str(cliente),
-                    "Prodotto": str(prodotto),
-                    "Materiale": mat,
-                    "Tipologia": tip,
-                    "Strutture_tagliate": int(take),
-                    "Residuo_taglio_tipologia": int(cap - (used + take)),
-                })
-
-                last_day = max(last_day, day)
-
-                if remaining > 0:
-                    day = aggiungi_giorno_lavorativo(day)
-
-    return piano_add, last_day, actual_start
-
-def _merge_piani_keep_existing(piano_base: list[dict], gruppo: str, piano_add: list[dict]) -> list[dict]:
-    out = [r for r in (piano_base or []) if str(r.get("Gruppo")) != str(gruppo)]
-    out.extend(piano_add)
-    out.sort(key=lambda r: (str(r.get("Data")), str(r.get("Materiale")), str(r.get("Tipologia", "")), str(r.get("Gruppo"))))
-    return out
+    return needs
 
 # =========================
-# HELPERS: PRODUZIONE - LOAD & NEED
+# SCHEDULER GENERICO a capacità/giorno
 # =========================
-def _build_load_prod_excluding_group(piano_prod: list[dict], gruppo_escluso: str) -> dict:
-    # load[materiale][data] = minuti prodotti
-    load = {"PVC": {}, "Alluminio": {}}
-    for r in (piano_prod or []):
-        if str(r.get("Gruppo")) == str(gruppo_escluso):
-            continue
-        mat = norm_materiale(r.get("Materiale", "PVC"))
-        ds = str(r.get("Data"))
-        m = int(r.get("Minuti_prodotti", 0) or 0)
-        load.setdefault(mat, {})
-        load[mat][ds] = load[mat].get(ds, 0) + m
-    return load
-
-def _need_prod_minutes_for_group(dati: dict, gruppo: str) -> dict:
-    need = {"PVC": 0, "Alluminio": 0}
-    for o in dati.get("ordini", []):
-        if str(o.get("ordine_gruppo")) != str(gruppo):
-            continue
-        mat = norm_materiale(o.get("materiale", "PVC"))
-        need[mat] = need.get(mat, 0) + int(o.get("tempo_minuti", 0) or 0)
-    return need
-
-def _day_has_any_free_minutes(load: dict, need: dict, day: date) -> bool:
-    day = prossimo_giorno_lavorativo(day)
-    ds = str(day)
-    mats = [m for m, mins in need.items() if mins > 0]
-    for m in mats:
-        cap = int(CAPACITA_MINUTI_GIORNALIERA.get(m, 0))
-        used = int(load.get(m, {}).get(ds, 0) or 0)
-        free = max(0, cap - used)
-        if free > 0:
-            return True
-    return False
-
-def _find_first_prod_day_with_capacity(load: dict, need: dict, start_day: date, max_days: int = 365) -> date:
-    d = prossimo_giorno_lavorativo(start_day)
-    for _ in range(max_days):
-        if _day_has_any_free_minutes(load, need, d):
-            return d
-        d = aggiungi_giorno_lavorativo(d)
-    return prossimo_giorno_lavorativo(start_day)
-
-def _insert_group_prod_into_free_capacity(dati: dict, piano_prod_base: list[dict], gruppo: str, start_day: date) -> tuple[list[dict], date, date]:
+def schedule_resource(
+    phase: str,
+    material_key: str,   # "PVC" | "Alluminio" | "ALL"
+    cluster: str,        # "Battente" | "Scorrevole/Speciale"
+    group_qty: dict,     # {group: qty}
+    group_meta: dict,    # meta per gruppo
+    group_start_day: dict,  # {group: start_day}
+    load_used: dict,     # load_used[(phase,material_key,cluster)][day_str] = used
+):
     """
-    Inserisce PRODUZIONE del gruppo nei buchi a partire da start_day.
-    ✅ se start_day è pieno, NON errore: parte dal primo giorno utile successivo.
-    Ritorna: (piano_prod_add, last_prod_day, actual_start_day)
+    Pianifica questo resource (una "linea") riempiendo i giorni fino a saturazione.
+    Ritorna:
+      - plan_rows: list[dict]
+      - end_day_by_group: dict[group]=last_day_used
     """
-    start_day = prossimo_giorno_lavorativo(start_day)
-    load = _build_load_prod_excluding_group(piano_prod_base, gruppo)
-    need = _need_prod_minutes_for_group(dati, gruppo)
+    key = (phase, material_key, cluster)
+    cap = int(CAP.get(key, 0))
+    if cap <= 0:
+        return [], {}
 
-    if not any(v > 0 for v in need.values()):
-        return [], start_day, start_day
+    load_used.setdefault(key, {})
 
-    actual_start = _find_first_prod_day_with_capacity(load, need, start_day)
+    # ordine gruppi: per data start (inserimento/taglio) poi per numero gruppo
+    def grp_sort(g):
+        sd = group_start_day.get(g, group_meta.get(g, {}).get("StartTaglio", date.today()))
+        try:
+            gi = int(g)
+        except Exception:
+            gi = 10**9
+        return (sd, gi)
 
-    righe = [o for o in dati.get("ordini", []) if str(o.get("ordine_gruppo")) == str(gruppo)]
-    cliente = (righe[0].get("cliente") if righe else "")
-    prodotto = (righe[0].get("prodotto") if righe else "")
+    groups = sorted([g for g, q in group_qty.items() if int(q) > 0], key=grp_sort)
 
-    piano_add = []
-    last_day = actual_start
+    plan_rows = []
+    end_day_by_group = {}
 
-    for mat in ["PVC", "Alluminio"]:
-        remaining = int(need.get(mat, 0) or 0)
+    for g in groups:
+        remaining = int(group_qty.get(g, 0) or 0)
         if remaining <= 0:
             continue
 
-        cap = int(CAPACITA_MINUTI_GIORNALIERA.get(mat, 0))
-        day = actual_start
+        day = prossimo_giorno_lavorativo(group_start_day.get(g, date.today()))
+        # ✅ non posso andare prima della data start del gruppo per questa fase
+        # ma posso entrare nello stesso giorno se c'è capienza residua.
 
         while remaining > 0:
             day = prossimo_giorno_lavorativo(day)
             ds = str(day)
 
-            used = int(load.get(mat, {}).get(ds, 0) or 0)
+            used = int(load_used[key].get(ds, 0) or 0)
             free = max(0, cap - used)
 
             if free <= 0:
@@ -378,120 +298,234 @@ def _insert_group_prod_into_free_capacity(dati: dict, piano_prod_base: list[dict
                 continue
 
             take = min(free, remaining)
-            load.setdefault(mat, {})
-            load[mat][ds] = used + take
+            load_used[key][ds] = used + take
             remaining -= take
 
-            piano_add.append({
+            meta = group_meta.get(g, {"Cliente": "", "Prodotto": ""})
+            plan_rows.append({
+                "Fase": phase,
                 "Data": ds,
-                "Gruppo": str(gruppo),
-                "Cliente": str(cliente),
-                "Prodotto": str(prodotto),
-                "Materiale": mat,
-                "Minuti_prodotti": int(take),
-                "Minuti_residui_materiale": int(cap - (used + take)),
+                "Gruppo": str(g),
+                "Cliente": meta.get("Cliente", ""),
+                "Prodotto": meta.get("Prodotto", ""),
+                "Materiale": material_key,
+                "Tipo": cluster,
+                "Quantita_lavorata": int(take),
+                "Residuo_capacita_giorno": int(cap - (used + take)),
             })
 
-            last_day = max(last_day, day)
+            end_day_by_group[g] = max(end_day_by_group.get(g, day), day)
 
             if remaining > 0:
-                day = aggiungi_giorno_lavorativo(day)
+                # continuo dal giorno stesso (se free era grande, potrebbe restare spazio,
+                # ma take è min(free,remaining) quindi free finito o remaining finito.
+                # se remaining > 0 e free era finito, passo al giorno dopo.
+                if load_used[key][ds] >= cap:
+                    day = aggiungi_giorno_lavorativo(day)
 
-    return piano_add, last_day, actual_start
+    return plan_rows, end_day_by_group
 
 # =========================
-# CALCOLO PIANO (TAGLIO + PRODUZIONE)
+# CALCOLO PIANI DI TUTTE LE FASI + CONSEGNE
 # =========================
-def calcola_piano(dati: dict):
+def calcola_piani_fasi(dati: dict):
     ordini = dati.get("ordini", [])
     if not ordini:
-        return [], [], []
+        return {}, []
 
-    gruppi = sorted({str(o.get("ordine_gruppo")) for o in ordini},
-                    key=lambda x: int(x) if str(x).isdigit() else 10**9)
+    group_meta = build_group_meta(dati)
+    needs = build_needs_by_phase(dati)
 
-    # ---- TAGLIO ----
-    piano_taglio = []
-    fine_taglio_gruppo = {}
+    groups = sorted(group_meta.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9)
 
-    for g in gruppi:
-        righe_g = [o for o in ordini if str(o.get("ordine_gruppo")) == str(g)]
-        if not righe_g:
-            continue
+    # start day per fase (sequenza)
+    start_day_by_group_phase = {}  # (group, phase) -> date
+    end_day_by_group_phase = {}    # (group, phase) -> date
 
-        d0 = (
-            righe_g[0].get("data_inizio_taglio_gruppo")
-            or righe_g[0].get("data_inizio_gruppo")
-            or righe_g[0].get("data_richiesta")
-            or str(date.today())
-        )
-        start_taglio = prossimo_giorno_lavorativo(safe_date(d0))
+    # fase 1: Taglio parte da data_inizio_taglio_gruppo (o inserito)
+    for g in groups:
+        start_day_by_group_phase[(g, "Taglio")] = prossimo_giorno_lavorativo(group_meta[g]["StartTaglio"])
 
-        add, last_day, _ = _insert_group_taglio_into_free_capacity(
-            dati=dati,
-            piano_taglio_base=piano_taglio,
-            gruppo=g,
-            start_day=start_taglio,
-        )
-        piano_taglio = _merge_piani_keep_existing(piano_taglio, g, add)
-        fine_taglio_gruppo[g] = last_day
+    load_used = {}
+    plans = {p: [] for p in ["Taglio", "Saldatura", "Assemblaggio", "Vetrazione", "Imballaggio"]}
 
-    # ---- PRODUZIONE ----
-    piano_prod = []
-    fine_prod_gruppo = {}
+    def phase_start(g: str, phase: str) -> date:
+        return start_day_by_group_phase.get((g, phase), prossimo_giorno_lavorativo(group_meta[g]["StartTaglio"]))
 
-    for g in gruppi:
-        last_cut = fine_taglio_gruppo.get(g)
-        if not last_cut:
-            start_prod = prossimo_giorno_lavorativo(date.today())
-        else:
-            start_prod = aggiungi_giorno_lavorativo(prossimo_giorno_lavorativo(last_cut))
+    def set_next_phase_start(g: str, cur_phase: str, next_phase: str):
+        end_cur = end_day_by_group_phase.get((g, cur_phase))
+        if end_cur is None:
+            # se fase non esiste per questo gruppo, non obbligo
+            start_day_by_group_phase[(g, next_phase)] = phase_start(g, next_phase)
+            return
+        start_day_by_group_phase[(g, next_phase)] = aggiungi_giorno_lavorativo(prossimo_giorno_lavorativo(end_cur))
 
-        add_prod, last_prod, _ = _insert_group_prod_into_free_capacity(
-            dati=dati,
-            piano_prod_base=piano_prod,
-            gruppo=g,
-            start_day=start_prod,
-        )
-        piano_prod = _merge_piani_keep_existing(piano_prod, g, add_prod)
-        fine_prod_gruppo[g] = last_prod
+    # Pianifico in ordine fasi
+    phase_order = ["Taglio", "Saldatura", "Assemblaggio", "Vetrazione", "Imballaggio"]
 
-    # ---- CONSEGNE: fine produzione + 3 gg lavorativi ----
+    for phase in phase_order:
+        # per ogni resource della fase
+        for (mat, cluster), group_qty in needs.get(phase, {}).items():
+            # start per ogni gruppo = max(start fase, ...)
+            group_start = {}
+            for g in group_qty.keys():
+                group_start[g] = phase_start(g, phase)
+
+            rows, end_by_g = schedule_resource(
+                phase=phase,
+                material_key=mat,
+                cluster=cluster,
+                group_qty=group_qty,
+                group_meta=group_meta,
+                group_start_day=group_start,
+                load_used=load_used,
+            )
+
+            plans[phase].extend(rows)
+
+            for g, endd in end_by_g.items():
+                prev = end_day_by_group_phase.get((g, phase))
+                end_day_by_group_phase[(g, phase)] = max(prev, endd) if prev else endd
+
+        # imposto start fase successiva (sequenza) usando la fine massima della fase per quel gruppo
+        if phase != phase_order[-1]:
+            next_phase = phase_order[phase_order.index(phase) + 1]
+            for g in groups:
+                # fine max di quella fase (anche se su più risorse)
+                end_max = end_day_by_group_phase.get((g, phase))
+                if end_max is not None:
+                    start_day_by_group_phase[(g, next_phase)] = aggiungi_giorno_lavorativo(prossimo_giorno_lavorativo(end_max))
+                else:
+                    # se non ha lavori in questa fase, lascio invariato
+                    start_day_by_group_phase[(g, next_phase)] = start_day_by_group_phase.get((g, next_phase), phase_start(g, next_phase))
+
+    # CONSEGNE: fine dell'ultima fase presente (PVC -> Imballaggio, Allu -> Vetrazione)
+    # prendo la data max tra (Imballaggio) e (Vetrazione)
     consegne = []
-    for g in gruppi:
-        righe_g = [o for o in ordini if str(o.get("ordine_gruppo")) == str(g)]
-        cliente = righe_g[0].get("cliente", "") if righe_g else ""
-        prodotto = righe_g[0].get("prodotto", "") if righe_g else ""
-        tempo_tot = sum(int(o.get("tempo_minuti", 0) or 0) for o in righe_g)
-
-        fine_prod = fine_prod_gruppo.get(g)
-        if fine_prod:
-            d = prossimo_giorno_lavorativo(fine_prod)
-            for _ in range(3):
-                d = aggiungi_giorno_lavorativo(d)
-            stimata = d
+    for g in groups:
+        end_imp = end_day_by_group_phase.get((g, "Imballaggio"))
+        end_vet = end_day_by_group_phase.get((g, "Vetrazione"))
+        fine = None
+        if end_imp and end_vet:
+            fine = max(end_imp, end_vet)
         else:
-            stimata = prossimo_giorno_lavorativo(date.today())
+            fine = end_imp or end_vet
+
+        if fine is None:
+            fine = prossimo_giorno_lavorativo(date.today())
+
+        # +3 gg lavorativi (come facevi prima)
+        d = prossimo_giorno_lavorativo(fine)
+        for _ in range(3):
+            d = aggiungi_giorno_lavorativo(d)
 
         consegne.append({
             "Gruppo": str(g),
-            "Cliente": str(cliente),
-            "Prodotto": str(prodotto),
-            "Tempo_totale_minuti": int(tempo_tot),
-            "Stimata": str(stimata),
+            "Cliente": group_meta[g]["Cliente"],
+            "Prodotto": group_meta[g]["Prodotto"],
+            "Stimata": str(d),
         })
 
-    return consegne, piano_prod, piano_taglio
+    # ordino righe piani
+    for p in plans:
+        plans[p].sort(key=lambda r: (r["Data"], r["Gruppo"], r["Materiale"], r["Tipo"]))
+
+    consegne.sort(key=lambda x: int(x["Gruppo"]) if x["Gruppo"].isdigit() else 10**9)
+    return plans, consegne
 
 # =========================
-# APP
+# GANTT (giorno per giorno)
 # =========================
-st.set_page_config(page_title="Planner Produzione", layout="wide")
+def render_gantt(df_phase: pd.DataFrame, title: str):
+    st.subheader(title)
+
+    if df_phase.empty:
+        st.info("Nessun dato.")
+        return
+
+    df_phase = df_phase.copy()
+    df_phase["Data"] = pd.to_datetime(df_phase["Data"])
+    df_phase = df_phase[df_phase["Data"].dt.weekday < 5].copy()
+    df_phase["Giorno"] = df_phase["Data"].dt.strftime("%d/%m")
+
+    df_phase["Commessa"] = (
+        "G" + df_phase["Gruppo"].astype(str)
+        + " | " + df_phase["Cliente"].astype(str)
+        + " | " + df_phase["Prodotto"].astype(str)
+    )
+
+    agg = (
+        df_phase.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
+        .agg(qta=("Quantita_lavorata", "sum"))
+    )
+
+    min_d = df_phase["Data"].min().normalize()
+    max_d = df_phase["Data"].max().normalize()
+
+    all_days = pd.date_range(start=min_d, end=max_d, freq="B")
+    giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
+    df_days = pd.DataFrame({"Giorno": giorni_ordinati})
+
+    agg["label"] = agg["Commessa"] + "\n" + agg["qta"].astype(int).astype(str)
+
+    sort_y = alt.SortField(field="Gruppo", order="ascending")
+
+    base = alt.Chart(agg).encode(
+        y=alt.Y(
+            "Commessa:N",
+            sort=sort_y,
+            title="Commesse",
+            axis=alt.Axis(labelFontSize=12, labelLimit=550, titleFontSize=13),
+            scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15),
+        ),
+        x=alt.X(
+            "Giorno:N",
+            sort=giorni_ordinati,
+            scale=alt.Scale(domain=giorni_ordinati),
+            title="Giorni (solo lavorativi)",
+            axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13),
+        ),
+        tooltip=[
+            alt.Tooltip("Giorno:N", title="Giorno"),
+            alt.Tooltip("Commessa:N", title="Commessa"),
+            alt.Tooltip("qta:Q", title="Quantità lavorata"),
+        ],
+    )
+
+    ghost = alt.Chart(df_days).mark_point(opacity=0).encode(
+        x=alt.X("Giorno:N", sort=giorni_ordinati, scale=alt.Scale(domain=giorni_ordinati))
+    )
+
+    bars = base.mark_bar(cornerRadius=10).encode(
+        color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
+    )
+
+    text = alt.Chart(agg).mark_text(
+        align="center",
+        baseline="middle",
+        fontSize=12,
+        lineBreak="\n",
+    ).encode(
+        y=alt.Y("Commessa:N", sort=sort_y),
+        x=alt.X("Giorno:N", sort=giorni_ordinati),
+        text="label:N",
+    )
+
+    chart = (ghost + bars + text).properties(
+        height=max(380, 70 * len(agg["Commessa"].unique()))
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+# =========================
+# UI APP
+# =========================
+st.set_page_config(page_title="Planner Produzione - Fasi", layout="wide")
 
 if not check_login():
     st.stop()
 
-st.title("📦 Planner Produzione (Online)")
+st.title("📦 Planner Produzione (Fasi + Gantt multipli)")
 
 dati = carica_dati()
 
@@ -501,23 +535,21 @@ if "righe_correnti" not in st.session_state:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("⚙️ Capacità")
+    st.subheader("⚙️ Capacità (giornaliere)")
+
     st.info(
-        f"**PRODUZIONE (minuti/giorno)**\n"
-        f"• PVC: {CAPACITA_MINUTI_GIORNALIERA['PVC']} minuti\n"
-        f"• Alluminio: {CAPACITA_MINUTI_GIORNALIERA['Alluminio']} minuti\n\n"
-        f"**TAGLIO (strutture/giorno) - 2 macchine**\n"
-        f"• PVC: Battente {CAP_TAGLIO[('PVC','Battente')]}, "
-        f"Scorrevole {CAP_TAGLIO[('PVC','Scorrevole')]}, "
-        f"Speciale {CAP_TAGLIO[('PVC','Struttura speciale')]}\n"
-        f"• Alluminio: Battente {CAP_TAGLIO[('Alluminio','Battente')]}, "
-        f"Scorrevole {CAP_TAGLIO[('Alluminio','Scorrevole')]}, "
-        f"Speciale {CAP_TAGLIO[('Alluminio','Struttura speciale')]}\n\n"
-        "Regole tempo PRODUZIONE:\n"
-        "• Battente: 90 min/vetro (Alluminio +30 min/struttura)\n"
-        "• Scorrevole: 480 min/struttura\n"
-        "• Speciale: 480 min/struttura\n\n"
-        "⚠️ Per Battente i vetri sono TOTALI della riga (somma su tutte le strutture)."
+        "**BATTENTE (vetri/giorno)**\n"
+        "• Taglio PVC: 60 | Taglio Alluminio: 40\n"
+        "• Saldatura PVC: 40\n"
+        "• Assemblaggio PVC: 50 | Assemblaggio Alluminio: 30\n"
+        "• Vetrazione (totale PVC+Alluminio): 40\n"
+        "• Imballaggio (totale PVC+Alluminio): 60\n\n"
+        "**SCORREVOLE / SPECIALE (strutture/giorno)**\n"
+        "• Taglio PVC: 10 | Taglio Alluminio: 10\n"
+        "• Saldatura PVC: 10\n"
+        "• Assemblaggio PVC: 10 | Assemblaggio Alluminio: 10\n"
+        "• Vetrazione (totale PVC+Alluminio): 15\n"
+        "• Imballaggio (totale PVC+Alluminio): 60  (assunzione)\n"
     )
 
 with col2:
@@ -534,14 +566,18 @@ with col2:
 
     if tipologia == "Battente":
         vetri_totali = st.number_input(
-            "Numero vetri TOTALI per questa riga (somma su tutte le strutture)",
+            "Numero vetri TOTALI per questa riga",
             min_value=1, value=1, step=1
         )
     else:
         vetri_totali = 0
 
-    minuti_riga, minuti_medi = minuti_preview(materiale, tipologia, int(quantita_strutture), int(vetri_totali))
-    st.info(f"⏱️ Produzione riga: totale {minuti_riga} minuti (≈ {minuti_medi} min/struttura)")
+    # info carico
+    tcluster = tipologia_cluster(tipologia)
+    if tcluster == "Battente":
+        st.info(f"Carico riga: {int(vetri_totali)} vetri")
+    else:
+        st.info(f"Carico riga: {int(quantita_strutture)} strutture")
 
     cadd, cclear = st.columns(2)
 
@@ -551,8 +587,7 @@ with col2:
                 "materiale": norm_materiale(materiale),
                 "tipologia": norm_tipologia(tipologia),
                 "quantita_strutture": int(quantita_strutture),
-                "vetri_totali": int(vetri_totali) if tipologia == "Battente" else "",
-                "tempo_minuti": int(minuti_riga)
+                "vetri_totali": int(vetri_totali) if tipologia == "Battente" else 0,
             })
             st.success("Riga aggiunta")
 
@@ -565,8 +600,6 @@ with col2:
     righe = st.session_state["righe_correnti"]
     if righe:
         st.dataframe(righe, use_container_width=True)
-        totale = sum(int(r.get("tempo_minuti", 0)) for r in righe)
-        st.success(f"Totale PRODUZIONE (somma righe): {totale} minuti")
     else:
         st.info("Nessuna riga aggiunta.")
 
@@ -594,8 +627,7 @@ with col2:
                     "materiale": norm_materiale(r["materiale"]),
                     "tipologia": norm_tipologia(r["tipologia"]),
                     "quantita_strutture": int(r["quantita_strutture"]),
-                    "vetri_totali": r["vetri_totali"],
-                    "tempo_minuti": int(r["tempo_minuti"]),
+                    "vetri_totali": int(r["vetri_totali"]),
                     "data_richiesta": str(data_richiesta),
                     "data_inizio_taglio_gruppo": str(prossimo_giorno_lavorativo(data_inizio_taglio)),
                     "inserito_il": str(date.today()),
@@ -609,34 +641,26 @@ with col2:
 
 st.divider()
 
-# -----------------------------
-# LISTA ORDINI
-# -----------------------------
 st.subheader("📋 Ordini (righe)")
 if dati.get("ordini"):
     st.dataframe(dati["ordini"], use_container_width=True)
 else:
     st.info("Nessun ordine inserito.")
 
-# -----------------------------
-# BOTTONI PRINCIPALI
-# -----------------------------
 c1, c2, c3 = st.columns([1, 1, 2])
 
 with c1:
-    if st.button("📅 Calcola piano"):
-        consegne, piano_prod, piano_taglio = calcola_piano(dati)
+    if st.button("📅 Calcola piani + Gantt"):
+        plans, consegne = calcola_piani_fasi(dati)
+        st.session_state["plans"] = plans
         st.session_state["consegne"] = consegne
-        st.session_state["piano_prod"] = piano_prod
-        st.session_state["piano_taglio"] = piano_taglio
 
 with c2:
     if st.button("🗑️ Cancella tutto"):
         dati = {"ordini": []}
         salva_dati(dati)
+        st.session_state.pop("plans", None)
         st.session_state.pop("consegne", None)
-        st.session_state.pop("piano_prod", None)
-        st.session_state.pop("piano_taglio", None)
         st.session_state["righe_correnti"] = []
         st.warning("Ordini cancellati")
         st.rerun()
@@ -646,248 +670,46 @@ with c3:
         st.session_state.logged_in = False
         st.rerun()
 
-# -----------------------------
-# CONSEGNE
-# -----------------------------
 if "consegne" in st.session_state:
-    st.subheader("✅ Consegne stimate (per gruppo) — fine produzione + 3 gg lavorativi")
+    st.subheader("✅ Consegne stimate (fine ultima fase + 3 gg lavorativi)")
     st.dataframe(st.session_state["consegne"], use_container_width=True)
 
-# -----------------------------
-# PIANO TAGLIO
-# -----------------------------
-if "piano_taglio" in st.session_state:
-    st.subheader("✂️ Piano TAGLIO (strutture/giorno)")
-    df_taglio = pd.DataFrame(st.session_state.get("piano_taglio", []))
-    if df_taglio.empty:
-        st.info("Nessun dato per il taglio.")
+# =========================
+# GANTT MULTIPLI
+# =========================
+if "plans" in st.session_state:
+    plans = st.session_state["plans"]
+
+    # Taglio: separo PVC e Alluminio
+    df_taglio = pd.DataFrame(plans.get("Taglio", []))
+    if not df_taglio.empty:
+        render_gantt(df_taglio[df_taglio["Materiale"] == "PVC"], "✂️ Gantt TAGLIO - PVC")
+        render_gantt(df_taglio[df_taglio["Materiale"] == "Alluminio"], "✂️ Gantt TAGLIO - Alluminio")
     else:
-        st.dataframe(df_taglio, use_container_width=True)
+        st.subheader("✂️ Gantt TAGLIO")
+        st.info("Nessun dato.")
 
-# -----------------------------
-# PIANO PRODUZIONE + SATURAZIONE
-# -----------------------------
-if "piano_prod" in st.session_state:
-    st.subheader("🧾 Piano PRODUZIONE (spezzato a minuti) + Saturazione")
+    # Saldatura: solo PVC
+    df_sald = pd.DataFrame(plans.get("Saldatura", []))
+    render_gantt(df_sald, "🔥 Gantt SALDATURA - PVC")
 
-    df_p = pd.DataFrame(st.session_state.get("piano_prod", []))
-    if df_p.empty:
-        st.info("Nessun dato per la produzione.")
+    # Assemblaggio: separo PVC e Alluminio
+    df_ass = pd.DataFrame(plans.get("Assemblaggio", []))
+    if not df_ass.empty:
+        render_gantt(df_ass[df_ass["Materiale"] == "PVC"], "🧩 Gantt ASSEMBLAGGIO - PVC")
+        render_gantt(df_ass[df_ass["Materiale"] == "Alluminio"], "🧩 Gantt ASSEMBLAGGIO - Alluminio")
     else:
-        df_p["Materiale"] = df_p["Materiale"].apply(norm_materiale)
-        df_p["Capacità"] = df_p["Materiale"].map(CAPACITA_MINUTI_GIORNALIERA).astype(float)
+        st.subheader("🧩 Gantt ASSEMBLAGGIO")
+        st.info("Nessun dato.")
 
-        used = (
-            df_p.groupby(["Data", "Materiale"], as_index=False)["Minuti_prodotti"]
-            .sum()
-            .rename(columns={"Minuti_prodotti": "minuti_usati"})
-        )
+    # Vetrazione: unica (Materiale = ALL)
+    df_vet = pd.DataFrame(plans.get("Vetrazione", []))
+    render_gantt(df_vet, "🪟 Gantt VETRAZIONE (PVC + Alluminio)")
 
-        df_p = df_p.merge(used, on=["Data", "Materiale"], how="left")
-        df_p["Saturazione_%"] = (df_p["minuti_usati"] / df_p["Capacità"]) * 100
-        df_p["Saturazione_%"] = df_p["Saturazione_%"].fillna(0).clip(0, 100)
+    # Imballaggio: unico
+    df_imb = pd.DataFrame(plans.get("Imballaggio", []))
+    render_gantt(df_imb, "📦 Gantt IMBALLAGGIO (PVC + Alluminio)")
 
-        st.dataframe(
-            df_p.drop(columns=["Capacità"], errors="ignore"),
-            use_container_width=True,
-            column_config={
-                "Saturazione_%": st.column_config.ProgressColumn(
-                    "Saturazione %",
-                    min_value=0,
-                    max_value=100,
-                    format="%.0f%%",
-                    help="Saturazione giornaliera della capacità produttiva (per giorno+materiale)",
-                )
-            },
-        )
-
-# -----------------------------
-# SPOSTA INIZIO TAGLIO
-# -----------------------------
-st.divider()
-st.subheader("📦 Sposta inizio TAGLIO commessa (usa residuo, poi slitta)")
-
-if "consegne" in st.session_state and st.session_state.get("consegne"):
-    gruppi = sorted({str(o["Gruppo"]) for o in st.session_state["consegne"]},
-                    key=lambda x: int(x) if str(x).isdigit() else 10**9)
-
-    g_sel = st.selectbox("Seleziona gruppo", gruppi, key="sposta_gruppo_taglio")
-    nuova_data_taglio = st.date_input("Nuova data inizio TAGLIO", key="sposta_data_taglio", value=prossimo_giorno_lavorativo(date.today()))
-
-    if st.button("📌 Applica spostamento TAGLIO"):
-        piano_taglio_corrente = st.session_state.get("piano_taglio", [])
-        piano_prod_corrente = st.session_state.get("piano_prod", [])
-
-        nuova_data_ok = prossimo_giorno_lavorativo(nuova_data_taglio)
-
-        # 1) Reinserisco TAGLIO del gruppo nei buchi (se giorno pieno -> parte dal primo utile)
-        add_taglio, last_cut_day, actual_cut_start = _insert_group_taglio_into_free_capacity(
-            dati=dati,
-            piano_taglio_base=piano_taglio_corrente,
-            gruppo=g_sel,
-            start_day=nuova_data_ok,
-        )
-        nuovo_taglio = _merge_piani_keep_existing(piano_taglio_corrente, g_sel, add_taglio)
-
-        # 2) Start produzione = giorno lavorativo dopo fine taglio del gruppo
-        start_prod = aggiungi_giorno_lavorativo(prossimo_giorno_lavorativo(last_cut_day))
-
-        # 3) Reinserisco PRODUZIONE del gruppo nei buchi (se giorno pieno -> parte dal primo utile)
-        add_prod, _, _ = _insert_group_prod_into_free_capacity(
-            dati=dati,
-            piano_prod_base=piano_prod_corrente,
-            gruppo=g_sel,
-            start_day=start_prod,
-        )
-        nuovo_prod = _merge_piani_keep_existing(piano_prod_corrente, g_sel, add_prod)
-
-        # 4) Salvo la nuova data nel JSON (quella richiesta)
-        for o in dati["ordini"]:
-            if str(o.get("ordine_gruppo")) == str(g_sel):
-                o["data_inizio_taglio_gruppo"] = str(nuova_data_ok)
-        salva_dati(dati)
-
-        # 5) Aggiorno consegne
-        df_np = pd.DataFrame(nuovo_prod)
-        consegne_new = []
-        if not df_np.empty:
-            df_np["Data_dt"] = pd.to_datetime(df_np["Data"]).dt.date
-            for g in gruppi:
-                righe_g = [o for o in dati.get("ordini", []) if str(o.get("ordine_gruppo")) == str(g)]
-                cliente = righe_g[0].get("cliente", "") if righe_g else ""
-                prodotto = righe_g[0].get("prodotto", "") if righe_g else ""
-                tempo_tot = sum(int(o.get("tempo_minuti", 0) or 0) for o in righe_g)
-
-                sub = df_np[df_np["Gruppo"].astype(str) == str(g)]
-                if sub.empty:
-                    stimata = prossimo_giorno_lavorativo(date.today())
-                else:
-                    fine = max(sub["Data_dt"])
-                    d = prossimo_giorno_lavorativo(fine)
-                    for _ in range(3):
-                        d = aggiungi_giorno_lavorativo(d)
-                    stimata = d
-
-                consegne_new.append({
-                    "Gruppo": str(g),
-                    "Cliente": str(cliente),
-                    "Prodotto": str(prodotto),
-                    "Tempo_totale_minuti": int(tempo_tot),
-                    "Stimata": str(stimata),
-                })
-
-        st.session_state["piano_taglio"] = nuovo_taglio
-        st.session_state["piano_prod"] = nuovo_prod
-        st.session_state["consegne"] = consegne_new
-
-        st.success(
-            f"✅ Gruppo {g_sel} richiesto al TAGLIO dal {nuova_data_ok}. "
-            f"Partenza effettiva taglio: {actual_cut_start} (se il giorno scelto è pieno, parte dal primo giorno utile)."
-        )
-        st.rerun()
-
-# -----------------------------
-# GANTT PRODUZIONE
-# -----------------------------
-st.divider()
-st.subheader("📊 Gantt Produzione (giorno per giorno)")
-
-df = pd.DataFrame(st.session_state.get("piano_prod", []))
-if df.empty:
-    st.info("Nessun dato per il Gantt.")
-else:
-    df["Data"] = pd.to_datetime(df["Data"])
-    df = df[df["Data"].dt.weekday < 5].copy()
-    df["Giorno"] = df["Data"].dt.strftime("%d/%m")
-
-    df["Commessa"] = (
-        "Gruppo " + df["Gruppo"].astype(str)
-        + " | " + df["Cliente"].astype(str)
-        + " | " + df["Prodotto"].astype(str)
-    )
-
-    agg = (
-        df.groupby(["Giorno", "Commessa", "Gruppo", "Cliente", "Prodotto"], as_index=False)
-          .agg(minuti=("Minuti_prodotti", "sum"))
-    )
-
-    min_d = df["Data"].min().normalize()
-    max_d = df["Data"].max().normalize()
-
-    all_days = pd.date_range(start=min_d, end=max_d, freq="B")
-    giorni_ordinati = [d.strftime("%d/%m") for d in all_days]
-    df_days = pd.DataFrame({"Giorno": giorni_ordinati})
-
-    agg["label_base"] = (
-        "G" + agg["Gruppo"].astype(str)
-        + " | " + agg["Cliente"].astype(str)
-        + " | " + agg["Prodotto"].astype(str)
-    )
-
-    colA, colB, colC = st.columns([1, 1, 2])
-    with colA:
-        show_minutes = st.checkbox("Mostra minuti nel box", value=False, key="gantt_show_minutes")
-    with colB:
-        ordina = st.selectbox("Ordina righe", ["Per Gruppo", "Per Cliente"], index=0, key="gantt_ordina")
-    with colC:
-        st.caption("Ogni rettangolo = 1 giorno lavorativo di produzione per una commessa.")
-
-    if show_minutes:
-        agg["label"] = agg["label_base"] + "\n" + agg["minuti"].astype(int).astype(str) + " min"
-    else:
-        agg["label"] = agg["label_base"]
-
-    if ordina == "Per Gruppo":
-        sort_y = alt.SortField(field="Gruppo", order="ascending")
-    else:
-        sort_y = alt.SortField(field="Cliente", order="ascending")
-
-    base = alt.Chart(agg).encode(
-        y=alt.Y(
-            "Commessa:N",
-            sort=sort_y,
-            title="Commesse",
-            axis=alt.Axis(labelFontSize=12, labelLimit=500, titleFontSize=13),
-            scale=alt.Scale(paddingInner=0.35, paddingOuter=0.15)
-        ),
-        x=alt.X(
-            "Giorno:N",
-            sort=giorni_ordinati,
-            scale=alt.Scale(domain=giorni_ordinati),
-            title="Giorni (solo lavorativi)",
-            axis=alt.Axis(labelAngle=0, labelFontSize=12, titleFontSize=13)
-        ),
-        tooltip=[
-            alt.Tooltip("Giorno:N", title="Giorno"),
-            alt.Tooltip("Commessa:N", title="Commessa"),
-            alt.Tooltip("minuti:Q", title="Minuti prodotti"),
-        ],
-    )
-
-    ghost = alt.Chart(df_days).mark_point(opacity=0).encode(
-        x=alt.X("Giorno:N", sort=giorni_ordinati, scale=alt.Scale(domain=giorni_ordinati))
-    )
-
-    bars = base.mark_bar(cornerRadius=10).encode(
-        color=alt.Color("Cliente:N", legend=alt.Legend(title="Cliente"))
-    )
-
-    text = alt.Chart(agg).mark_text(
-        align="center",
-        baseline="middle",
-        fontSize=12,
-        lineBreak="\n",
-    ).encode(
-        y=alt.Y("Commessa:N", sort=sort_y),
-        x=alt.X("Giorno:N", sort=giorni_ordinati),
-        text="label:N",
-    )
-
-    chart = (ghost + bars + text).properties(
-        height=max(380, 70 * len(agg["Commessa"].unique())),
-    )
-
-    st.altair_chart(chart, use_container_width=True)
 
 
 
